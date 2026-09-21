@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="kr.mabed.control"
-    android:versionCode="40" android:versionName="5.9.1">
+    android:versionCode="41" android:versionName="5.9.2">
 
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -15,10 +15,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
-    <!-- 새 버전을 앱이 직접 설치 (처음 한 번은 '이 출처 허용' 필요) -->
+    <!-- 받은 새 버전으로 안드로이드 설치 화면을 연다 (처음 한 번은 '이 출처 허용' 필요) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
-    <!-- 안드로이드 12+: 스스로 설치한 뒤부터는 묻지 않고 업데이트 -->
-    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION"/>
 
     <application
         android:label="@string/app_name"
@@ -38,7 +36,11 @@
         <service android:name=".ServerService"
                  android:exported="false"
                  android:foregroundServiceType="connectedDevice"/>
-        <receiver android:name=".InstallReceiver" android:exported="false"/>
+        <!-- 받은 APK 를 설치 화면에 건네는 창구. 밖에 공개하지 않고, 설치 화면을 열 때만 읽기 권한을 준다 -->
+        <provider android:name=".ApkProvider"
+                  android:authorities="kr.mabed.control.apk"
+                  android:exported="false"
+                  android:grantUriPermissions="true"/>
         <receiver android:name=".BootReceiver" android:exported="true"
                   android:directBootAware="false">
             <intent-filter>

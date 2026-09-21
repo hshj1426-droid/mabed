@@ -13,7 +13,8 @@
 1. 폰에서 [최신 릴리스](https://github.com/hshj1426-droid/mabed/releases/latest)를 열고 `mabed-x.y.z.apk` 를 받아 설치한다.
    "출처를 알 수 없는 앱" 경고가 뜨면 이번만 허용한다.
 2. 다음 버전부터는 **앱을 켤 때** 새 버전이 있는지 확인하고 설치할지 묻는다. (설정 → 새 버전 확인하고 설치 로도 가능)
-   처음 한 번은 "이 출처 허용"을 켜 달라는 안내가 나온다.
+   "설치"를 누르면 앱이 받은 뒤 안드로이드 설치 화면이 뜨고, **업데이트**를 누르면 끝난다. 처음 한 번은 "이 출처 허용"을 켜 달라는 안내가 나온다.
+   안 되면 같은 창의 **브라우저로 받기**.
 
 안드로이드 7.0 이상. 침대는 **2.4GHz 와이파이만** 쓸 수 있다.
 
@@ -95,7 +96,7 @@
 Gradle·AndroidX 없이 SDK 도구를 직접 부른다.
 
 ```
-./build.sh 5.9.1      # → build/mabed-5.9.1.apk
+./build.sh 5.9.2      # → build/mabed-5.9.2.apk
 ```
 
 - 필요: Android SDK(`ANDROID_HOME` 또는 `~/android-sdk`)의 build-tools 35.0.0 · platforms/android-35, JDK 17+
@@ -128,7 +129,7 @@ Gradle·AndroidX 없이 SDK 도구를 직접 부른다.
 | `App.java` | 서버·이웃 창구·이웃 찾기를 앱 전체에 하나씩, 기록 |
 | `ApiServer.java` · `HomeKey.java` | 폰끼리 창구(9099)와 짝짓기 열쇠·도장 |
 | `LanPeers.java` | 같은 와이파이의 폰 찾기(UDP 9098)·이웃 침대 가져오기 |
-| `Updates.java` · `Updater.java` · `InstallReceiver.java` | 새 버전 확인·앱 안 설치 |
+| `Updates.java` · `Updater.java` · `ApkProvider.java` | 새 버전 확인 · 내려받기 · 안드로이드 설치 화면으로 넘기기 |
 | `Beds.java` · `Net.java` · `BootReceiver.java` | 침대 목록 저장 · 와이파이/침대 설정 통신 · 부팅 뒤 되살리기 |
 | `Ui.java` · `BedView.java` · `Slider.java` · `Glyph.java` | 화면 부품 · 침대 그림 · 슬라이더 · 아이콘 (모두 코드로 그림) |
 

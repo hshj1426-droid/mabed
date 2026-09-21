@@ -1,31 +1,27 @@
 package kr.mabed.control;
 
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
-import android.content.pm.PackageInstaller;
 import android.os.Build;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
 
-/** 새 버전을 앱이 직접 내려받아 설치한다 (브라우저를 거치지 않는다).
- *  안드로이드 규칙: 처음 한 번은 사람이 '설치'를 눌러야 한다.
- *  이 앱이 스스로 설치한 다음부터는(안드로이드 12 이상) 안드로이드 확인 창 없이 설치된다.
- *  배경에서 주기적으로 확인하지 않는다 (배터리) — 앱을 켤 때만 확인하고 사용자에게 묻는다. */
+/** 새 버전을 앱이 직접 내려받아, 안드로이드 기본 설치 화면("업데이트할까요?")으로 넘긴다.
+ *
+ *  5.5.0~5.9.1 은 PackageInstaller 세션으로 앱이 스스로 설치했는데, 사용자 폰(갤럭시)에서
+ *  "내려받는 중"에 멈춰 끝나지 않았다(원인 미확정 — 폰 로그 없음). 그래서 브라우저·파일 앱이 쓰는 것과 같은,
+ *  그 폰에서 이미 잘 되는 방법(ACTION_VIEW + content:// 주소)으로 바꿨다. 매번 설치 화면에서 '업데이트'를 한 번 누른다. */
 public class Updater {
 
-    static final String ACTION_RESULT = "kr.mabed.control.INSTALL_RESULT";
-    static final String CH_UPDATE = "mabed_update";
-
-    /** 설치가 진행 중인가 (같은 버전을 두 번 받지 않게) */
+    /** 내려받는 중인가 (같은 버전을 두 번 받지 않게) */
     static volatile boolean busy = false;
 
-    /** 이 앱이 다른 앱(자기 자신 포함)을 설치해도 되는지 — 폰 설정의 '이 출처 허용' */
+    /** 진행 상황 — 받은 바이트 / 전체 바이트(모르면 -1) */
+    public interface Progress { void at(long done, long total); }
+
+    /** 이 앱이 설치 화면을 열어도 되는지 — 폰 설정의 '이 출처 허용' */
     public static boolean canInstall(Context c) {
         if (Build.VERSION.SDK_INT < 26) return true;
         try { return c.getPackageManager().canRequestPackageInstalls(); }
@@ -43,15 +39,20 @@ public class Updater {
         return n != null && n.url != null && n.url.toLowerCase(java.util.Locale.ROOT).endsWith(".apk");
     }
 
-    /** 내려받아 설치를 시작한다 — 반드시 배경 스레드에서 부를 것 */
-    public static void downloadAndInstall(Context ctx, Updates.Info n) throws Exception {
-        if (busy) throw new IOException("이미 설치를 진행하고 있습니다");
+    /** 내려받고 확인까지 — 반드시 배경 스레드에서. 실패하면 이유가 담긴 예외.
+     *  어떤 오류든(Exception 이 아닌 Error 까지) 잡아서 알린다 — 조용히 죽어 화면이 멈춰 있는 일이 없게 */
+    public static void download(Context ctx, Updates.Info n, Progress p) throws Exception {
+        if (busy) throw new IOException("이미 내려받는 중입니다");
         busy = true;
         try {
             Context c = ctx.getApplicationContext();
-            File f = new File(c.getCacheDir(), "update.apk");
-            App.addLog("업데이트", n.version + " 내려받는 중");
-            download(n.url, f);
+            File f = ApkProvider.file(c);
+            File dir = f.getParentFile();
+            if (dir != null && !dir.isDirectory() && !dir.mkdirs()) throw new IOException("저장할 곳을 만들지 못했습니다");
+            if (f.exists() && !f.delete()) throw new IOException("예전 파일을 지우지 못했습니다");
+            App.addLog("업데이트", n.version + " 내려받기 시작");
+            fetch(n.url, f, p);
+            App.addLog("업데이트", n.version + " 받음 · " + (f.length() / 1024) + "KB");
 
             // 받은 파일이 정말 이 앱인지, 정말 새 버전인지 확인한다
             PackageInfo pi = c.getPackageManager().getPackageArchiveInfo(f.getPath(), 0);
@@ -59,92 +60,48 @@ public class Updater {
                 throw new IOException("받은 파일이 마베드 앱이 아닙니다");
             if (!Updates.isNewer(pi.versionName, Updates.installed(c)))
                 throw new IOException("받은 파일이 새 버전이 아닙니다 (" + pi.versionName + ")");
-
-            install(c, f);
-            App.addLog("업데이트", n.version + " 설치를 시작했습니다");
         } catch (Exception e) {
-            busy = false;
             App.addLog("업데이트", "실패 · " + e.getMessage());
             throw e;
+        } catch (Throwable t) {
+            App.addLog("업데이트", "실패 · " + t);
+            throw new IOException("내려받다 멈췄습니다 (" + t.getClass().getSimpleName() + ")");
+        } finally {
+            busy = false;
         }
     }
 
-    private static void download(String url, File out) throws IOException {
+    /** 안드로이드 기본 설치 화면을 여는 요청 */
+    public static Intent installIntent() {
+        return new Intent(Intent.ACTION_VIEW)
+                .setDataAndType(ApkProvider.uri(), ApkProvider.MIME)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+    }
+
+    private static void fetch(String url, File out, Progress p) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setInstanceFollowRedirects(true);          // 깃허브는 다른 주소로 한 번 넘겨준다
         c.setConnectTimeout(15000);
-        c.setReadTimeout(30000);
+        c.setReadTimeout(20000);                     // 20초 동안 한 바이트도 안 오면 멈춘 것으로 본다
         c.setRequestProperty("User-Agent", "mabed");
         try {
-            if (c.getResponseCode() != 200) throw new IOException("내려받기 실패 · http " + c.getResponseCode());
+            int code = c.getResponseCode();
+            if (code != 200) throw new IOException("내려받기 실패 · http " + code);
+            long total = c.getContentLength();
             InputStream in = c.getInputStream();
             OutputStream o = new FileOutputStream(out);
+            long done = 0;
             try {
                 byte[] buf = new byte[16384];
                 int r;
-                while ((r = in.read(buf)) > 0) o.write(buf, 0, r);
+                while ((r = in.read(buf)) > 0) {
+                    o.write(buf, 0, r);
+                    done += r;
+                    if (p != null) p.at(done, total);
+                }
             } finally { o.close(); in.close(); }
+            if (total > 0 && done != total) throw new IOException("받다가 끊겼습니다 (" + done + "/" + total + ")");
         } finally { c.disconnect(); }
         if (out.length() < 10000) throw new IOException("받은 파일이 너무 작습니다");
     }
-
-    private static void install(Context c, File f) throws IOException {
-        PackageInstaller pi = c.getPackageManager().getPackageInstaller();
-        // 확인을 기다리다 버려진 예전 설치가 있으면 치운다 (여러 개 쌓이지 않게)
-        try {
-            for (PackageInstaller.SessionInfo si : pi.getMySessions())
-                try { pi.abandonSession(si.getSessionId()); } catch (Throwable ignored) {}
-        } catch (Throwable ignored) {}
-        PackageInstaller.SessionParams p =
-                new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
-        p.setAppPackageName(c.getPackageName());
-        // 안드로이드 12+: 이 앱이 스스로 설치한 적이 있으면 묻지 않고 설치된다
-        if (Build.VERSION.SDK_INT >= 31)
-            p.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
-        int id = pi.createSession(p);
-        PackageInstaller.Session s = pi.openSession(id);
-        try {
-            OutputStream o = s.openWrite("mabed.apk", 0, f.length());
-            InputStream in = new FileInputStream(f);
-            try {
-                byte[] buf = new byte[16384];
-                int r;
-                while ((r = in.read(buf)) > 0) o.write(buf, 0, r);
-                s.fsync(o);
-            } finally { in.close(); o.close(); }
-
-            Intent i = new Intent(c, InstallReceiver.class).setAction(ACTION_RESULT);
-            // 시스템이 결과를 채워 넣어야 하므로 MUTABLE (31 이상)
-            int flags = PendingIntent.FLAG_UPDATE_CURRENT
-                    | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
-            PendingIntent pend = PendingIntent.getBroadcast(c, id, i, flags);
-            s.commit(pend.getIntentSender());
-        } finally { s.close(); }
-    }
-
-    /** 업데이트 알림 (폰 알림줄) */
-    static void alert(Context c, String title, String text, PendingIntent tap) {
-        try {
-            NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm == null) return;
-            if (Build.VERSION.SDK_INT >= 26)
-                nm.createNotificationChannel(new NotificationChannel(
-                        CH_UPDATE, "마베드 업데이트", NotificationManager.IMPORTANCE_DEFAULT));
-            Notification.Builder b = Build.VERSION.SDK_INT >= 26
-                    ? new Notification.Builder(c, CH_UPDATE) : new Notification.Builder(c);
-            b.setContentTitle(title).setContentText(text)
-             .setSmallIcon(R.drawable.ic_stat).setAutoCancel(true);
-            if (tap != null) b.setContentIntent(tap);
-            nm.notify(2, b.build());
-        } catch (Throwable ignored) {}
-    }
-
-    /** 앱을 여는 알림용 PendingIntent */
-    static PendingIntent openApp(Context c) {
-        int f = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
-        Intent i = new Intent(c, MainActivity.class)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);   // 이미 열린 화면을 쓴다
-        return PendingIntent.getActivity(c, 3, i, f);
-    }
-
 }

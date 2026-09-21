@@ -160,8 +160,6 @@ public class MainActivity extends Activity {
         App.startNet(this);
         lan.setListening(true);     // 화면을 볼 때만 이웃 폰 신호를 받는다 (배터리)
         startTicking();
-        // 뒤에 있는 동안 설치 확인이 필요해졌다 (알림이 막혀 있어도 앱을 열면 이어서)
-        handleInstall();
         // '이 출처 허용'을 켜고 돌아왔으면 하던 설치를 이어서 한다
         if (installAfterPerm && pending != null && Updater.canInstall(this)) {
             installAfterPerm = false;
@@ -1806,27 +1804,7 @@ public class MainActivity extends Activity {
     }
 
     // ── 새로고침 ───────────────────────────────────────
-    /** 설치 리시버가 넘겨준 '설치' 확인 창과 결과를 화면에서 처리한다.
-     *  확인 창은 반드시 화면(Activity)이 띄운다 — 리시버가 띄우면 안드로이드 14+ 가 막는다 */
-    private void handleInstall() {
-        if (!App.uiVisible) return;
-        Intent confirm = App.takeConfirm();
-        if (confirm != null) {
-            updWaiting = false;
-            try { startActivity(confirm); }
-            catch (Throwable t) { toast("설치 창을 열지 못했습니다 · " + t.getClass().getSimpleName()); }
-            if (pending != null) showUpdate(pending);
-        }
-        String[] r = App.takeInstallResult();
-        if (r != null) {
-            updWaiting = false;
-            if (pending != null) showUpdate(pending);
-            if (r[0] != null) toast(r[0]);
-        }
-    }
-
     private void refresh() {
-        handleInstall();
         handlePair();
         // 다른 폰이 이 폰 침대의 이름을 바꾼 경우 등 — 저장된 목록을 다시 읽는다
         if (App.bedsRev != seenRev) {
@@ -2245,6 +2223,8 @@ public class MainActivity extends Activity {
                     + "설치하는 동안 앱이 잠깐 닫히고, 침대 연결이 몇 초 끊겼다 다시 붙습니다.")
             .setPositiveButton("설치", new android.content.DialogInterface.OnClickListener() {
                 public void onClick(android.content.DialogInterface d, int w) { startUpdate(n); } })
+            .setNeutralButton("브라우저로 받기", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) { pending = n; openUpdate(); } })
             .setNegativeButton("나중에", null).show();
     }
 
@@ -2262,43 +2242,58 @@ public class MainActivity extends Activity {
                 .setNegativeButton("취소", null).show();
             return;
         }
+        if (updWaiting) { toast("이미 내려받는 중입니다"); return; }
+        updWaiting = true;
         if (updView != null) updView.setText("새 버전 " + n.version + " 내려받는 중…");
         toast("내려받는 중…");
-        App.takeInstallResult();   // 지난번 결과가 남아 있으면 버린다
-        updWaiting = true;
         bg(new Runnable(){ public void run(){
             try {
-                Updater.downloadAndInstall(MainActivity.this, n);
-                // 이후는 안드로이드 설치 창(처음 한 번) 또는 조용히 설치 → 앱이 새로 시작된다
+                // 받은 양을 보여준다 — 멈춰 있는지 진행 중인지 눈으로 보이게
+                Updater.download(MainActivity.this, n, new Updater.Progress() {
+                    long shown = -1;
+                    public void at(final long done, final long total) {
+                        long kb = done / 1024;
+                        if (kb == shown) return;
+                        shown = kb;
+                        post(new Runnable(){ public void run(){
+                            if (updView != null) updView.setText("새 버전 " + n.version + " 내려받는 중… "
+                                    + (done / 1024) + "KB" + (total > 0 ? " / " + (total / 1024) + "KB" : ""));
+                        }});
+                    }
+                });
                 post(new Runnable(){ public void run(){
-                    if (!updWaiting) return;       // 그 사이 이미 답이 왔다
-                    if (updView != null) updView.setText("새 버전 " + n.version + " 설치 창을 여는 중…");
-                    // 30초 안에 아무 답이 없으면 멈춰 있지 말고 알려준다 (5.5.0 에서는 '내려받는 중'에 멈춰 있었다)
-                    ui.postDelayed(new Runnable(){ public void run(){
-                        if (!updWaiting || !alive()) return;
-                        updWaiting = false;
-                        showUpdate(n);
-                        new android.app.AlertDialog.Builder(MainActivity.this)
-                            .setTitle("설치 창이 뜨지 않았습니다")
-                            .setMessage("'지금 설치'를 한 번 더 눌러보세요.\n그래도 안 되면 설정 → 연결 기록 보기 화면을 캡처해서 보내주세요.\n\n"
-                                    + "급하면 깃허브 릴리스 페이지에서 직접 받아 설치해도 됩니다.")
-                            .setPositiveButton("알겠습니다", null)
-                            .setNeutralButton("릴리스 페이지", new android.content.DialogInterface.OnClickListener() {
-                                public void onClick(android.content.DialogInterface d, int w) {
-                                    try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(
-                                            "https://github.com/" + Updates.REPO + "/releases/latest"))); }
-                                    catch (Throwable ignored) {} } })
-                            .show();
-                    }}, 30000);
+                    updWaiting = false;
+                    if (!alive()) return;
+                    showUpdate(n);
+                    // 안드로이드 기본 설치 화면 ("업데이트할까요?") — 브라우저로 받아 설치할 때와 같은 화면
+                    try {
+                        startActivity(Updater.installIntent());
+                        toast("'업데이트'를 누르면 끝납니다");
+                    } catch (Throwable t) {
+                        App.addLog("업데이트", "설치 화면 열기 실패 · " + t);
+                        updateFailed(n, "설치 화면을 열지 못했습니다 (" + t.getClass().getSimpleName() + ")");
+                    }
                 }});
             } catch (final Exception e) {
                 post(new Runnable(){ public void run(){
                     updWaiting = false;
-                    if (updView != null) showUpdate(n);
-                    toast("설치하지 못했습니다 · " + e.getMessage());
+                    if (!alive()) return;
+                    showUpdate(n);
+                    updateFailed(n, e.getMessage());
                 }});
             }
         }});
+    }
+
+    /** 앱 안 업데이트가 안 됐을 때 — 이유를 보여주고, 브라우저로 받는 길을 연다 (끝없이 기다리게 두지 않는다) */
+    private void updateFailed(Updates.Info n, String why) {
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("업데이트하지 못했습니다")
+            .setMessage((why == null ? "" : why + "\n\n")
+                    + "'브라우저로 받기'를 누르면 깃허브에서 직접 받아 설치할 수 있습니다.")
+            .setPositiveButton("브라우저로 받기", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) { openUpdate(); } })
+            .setNegativeButton("닫기", null).show();
     }
 
     private void openInstallPerm() {

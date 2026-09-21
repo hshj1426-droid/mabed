@@ -18,15 +18,8 @@ public class App {
     /** 침대 목록이 화면 밖(이웃 폰의 이름 바꾸기 등)에서 바뀌면 올라간다 */
     public static volatile int bedsRev = 0;
 
-    /** 화면이 보이는 중인가 (설치 확인 창을 바로 띄울지, 알림으로 부탁할지) */
+    /** 화면이 보이는 중인가 (짝짓기 요청을 받을지, 앱을 닫은 뒤 끌지 판단) */
     public static volatile boolean uiVisible = false;
-
-    /** 뒤에 있을 때 도착한 '설치 확인' 창 — 알림이 막혀 있어도 앱을 열면 이어서 띄운다 */
-    private static android.content.Intent pendingConfirm;
-    static synchronized void keepConfirm(android.content.Intent i) { pendingConfirm = i; }
-    static synchronized android.content.Intent takeConfirm() {
-        android.content.Intent i = pendingConfirm; pendingConfirm = null; return i;
-    }
 
     /** 다른 폰이 보낸 짝짓기 요청 — 창구 스레드가 기다리고, 화면이 '허용/거절'로 답한다 */
     public static class PairReq {
@@ -59,17 +52,6 @@ public class App {
     }
     static synchronized void pairDone(PairReq r) { if (pairReq == r) pairReq = null; ping(); }
 
-    /** 설치 결과를 화면에 알린다 (null = 성공 또는 알릴 것 없음) */
-    private static String installMsg;
-    private static boolean installDone;
-    static synchronized void installResult(String msg) { installMsg = msg; installDone = true; ping(); }
-    /** 결과가 왔으면 {메시지} 를, 아직이면 null 을 돌려준다 */
-    static synchronized String[] takeInstallResult() {
-        if (!installDone) return null;
-        installDone = false;
-        String m = installMsg; installMsg = null;
-        return new String[]{ m };
-    }
     public static synchronized BedServer server() {
         if (SERVER == null) {
             SERVER = new BedServer(new BedServer.Listener() {
