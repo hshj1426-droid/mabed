@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /** 앱 전체가 함께 쓰는 서버 · 이웃 폰 창구 · 기록 (화면을 닫았다 열어도 하나만 돈다) */
 public class App {
@@ -105,6 +106,23 @@ public class App {
                 }
                 public String homeKey(boolean create) {
                     return create ? HomeKey.ensure(app) : HomeKey.get(app);
+                }
+                private boolean own(String token) {
+                    if (token == null) return false;
+                    for (Beds.Bed b : Beds.load(prefs(app))) if (b.token.equals(token)) return true;
+                    return false;
+                }
+                public String alarms(String token) {
+                    return own(token) ? Alarms.toJson(prefs(app), token).toString() : null;
+                }
+                public String alarmSet(String token, Map<String,String> op) {
+                    if (!own(token)) return null;
+                    if (!Alarms.ready(prefs(app), token)) throw new IllegalArgumentException("주인 폰에서 알람 시험을 먼저 해주세요");
+                    Alarms.apply(prefs(app), token, op);
+                    Alarms.push(app, server().byToken(token));   // 침대가 붙어 있으면 바로 넣는다 (아니면 다음 접속 때)
+                    addLog("알람", "다른 폰이 알람을 바꿨습니다 · " + op.get("op"));
+                    bedsRev++;                                   // 이 폰 화면도 다시 그리게
+                    return Alarms.toJson(prefs(app), token).toString();
                 }
             });
         }

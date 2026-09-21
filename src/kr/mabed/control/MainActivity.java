@@ -1067,6 +1067,8 @@ public class MainActivity extends Activity {
     private void switched() {
         targets.clear();
         dragPin = null;
+        LanPeers.RemoteBed rb = curRemote();
+        if (rb != null) remoteAlarms.remove(rb.token);   // 상대 침대 알람은 볼 때마다 주인 폰에서 새로 받는다
         buildTabs();
         applyBedSpecific();
         refresh();
@@ -1841,6 +1843,7 @@ public class MainActivity extends Activity {
             if (selTok != null) for (int i = 0; i < beds.size(); i++) if (beds.get(i).token.equals(selTok)) sel = i;
             fixSel();
             buildTabs();
+            renderAlarms();          // 다른 폰이 이 폰 침대의 알람을 바꿨을 수도 있다
             if (screen == SCR_SETTINGS) renderSettings();
         }
         if (screen == SCR_WIZARD) {
@@ -1958,202 +1961,159 @@ public class MainActivity extends Activity {
     }
 
     // ── 알람 ───────────────────────────────────────────
+    // 내 침대면 이 폰 저장소에서 읽고 고친다. 상대 침대(↗)면 주인 폰에 물어보고, 주인 폰에 부탁해서 고친다
+    // (설정은 주인 폰에 저장되고 주인 폰이 침대에 넣는다 — 사용자 결정 5.12.0).
+
+    /** 알람을 고치는 창구 */
+    private interface AlarmSink { void apply(Map<String, String> op, String okMsg); }
+
+    /** 상대 침대 알람 (주인 폰에서 받아온 것). 볼 때마다 다시 받는다 */
+    private final Map<String, Alarms.State> remoteAlarms = new HashMap<>();
+    private final Set<String> remoteLoading = new HashSet<>();
+
+    private static Map<String, String> op(String... kv) {
+        Map<String, String> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2) m.put(kv[i], kv[i + 1]);
+        return m;
+    }
+
     /** 메인 화면의 알람 칸 */
     private void renderAlarms() {
         if (alarmBox == null) return;
         alarmBox.removeAllViews();
+        quickLeft = null; quickTok = null; quickShownAt = 0;
         final Beds.Bed b = cur();
-        if (b == null) {
-            LanPeers.RemoteBed rb = curRemote();
-            alarmBox.addView(u.note("이 침대의 알람은 주인 폰"
-                    + (rb != null && !rb.phone.isEmpty() ? "(" + rb.phone + ")" : "") + " 에서 설정합니다."));
+        if (b != null) {
+            final String tok = b.token;
+            if (!Alarms.ready(prefs, tok)) { alarmBox.addView(alarmTestCard(tok)); return; }
+            drawAlarms(tok, Alarms.local(prefs, tok), localSink(tok), null);
             return;
         }
-        final String tok = b.token;
-        if (!Alarms.ready(prefs, tok)) {
-            boolean none = Alarms.clock(prefs, tok).equals("none");
-            LinearLayout box = u.col();
-            box.addView(u.text(none
-                    ? "지난 알람 시험에서 침대가 움직이지 않았습니다.\n침대가 연결된 상태에서 한 번 더 해볼 수 있습니다."
-                    : "원래 앱의 알람을 되살렸습니다 — 정해진 시각에 침대가 스스로 상체를 올려 깨워줍니다. "
-                      + "폰이 꺼져 있어도 침대가 알아서 합니다.\n\n처음 한 번, 침대 시계를 맞추는 5분짜리 시험이 필요합니다.",
-                    13.5f, u.fg, false));
-            Button go = u.btn(none ? "알람 시험 다시 하기" : "알람 시험 시작 (5분)", u.accent, 0xFFFFFFFF, 0, 14, 12,
-                    new Runnable(){ public void run(){ startAlarmTest(); }});
-            LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-1, -2);
-            gp.topMargin = u.dp(10); gp.bottomMargin = 0;
-            go.setLayoutParams(gp);
-            box.addView(go);
-            alarmBox.addView(u.card(box, 14));
+        final LanPeers.RemoteBed rb = curRemote();
+        if (rb == null) return;
+        String owner = rb.phone.isEmpty() ? "주인 폰" : rb.phone;
+        Alarms.State st = remoteAlarms.get(rb.token);
+        if (st == null) {
+            alarmBox.addView(u.note(owner + " 에서 알람을 불러오는 중…"));
+            loadRemoteAlarms(rb);
             return;
         }
+        if (st.error != null) {
+            alarmBox.addView(u.note(st.error));
+            alarmBox.addView(u.small("다시 불러오기", new Runnable(){ public void run(){
+                remoteAlarms.remove(rb.token); renderAlarms(); }}));
+            return;
+        }
+        if (!st.ready()) {
+            alarmBox.addView(u.note("이 침대는 " + owner + " 에서 알람 시험을 먼저 해야 알람을 쓸 수 있습니다."));
+            return;
+        }
+        drawAlarms(rb.token, st, remoteSink(rb), owner);
+    }
+
+    /** 알람 시험 전 안내 칸 (내 침대만) */
+    private View alarmTestCard(String tok) {
+        boolean none = Alarms.clock(prefs, tok).equals("none");
+        LinearLayout box = u.col();
+        box.addView(u.text(none
+                ? "지난 알람 시험에서 침대가 움직이지 않았습니다.\n침대가 연결된 상태에서 한 번 더 해볼 수 있습니다."
+                : "원래 앱의 알람을 되살렸습니다 — 정해진 시각에 침대가 스스로 상체를 올려 깨워줍니다. "
+                  + "폰이 꺼져 있어도 침대가 알아서 합니다.\n\n처음 한 번, 침대 시계를 맞추는 5분짜리 시험이 필요합니다.",
+                13.5f, u.fg, false));
+        Button go = u.btn(none ? "알람 시험 다시 하기" : "알람 시험 시작 (5분)", u.accent, 0xFFFFFFFF, 0, 14, 12,
+                new Runnable(){ public void run(){ startAlarmTest(); }});
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-1, -2);
+        gp.topMargin = u.dp(10); gp.bottomMargin = 0;
+        go.setLayoutParams(gp);
+        box.addView(go);
+        return u.card(box, 14);
+    }
+
+    private void loadRemoteAlarms(final LanPeers.RemoteBed rb) {
+        if (!remoteLoading.add(rb.token)) return;
+        bg(new Runnable(){ public void run(){
+            final JSONObject o = lan.alarms(rb.peerIp, rb.token);
+            post(new Runnable(){ public void run(){
+                remoteLoading.remove(rb.token);
+                Alarms.State s = Alarms.fromJson(o);
+                if (o == null) s.error = (rb.phone.isEmpty() ? "주인 폰" : rb.phone)
+                        + " 에서 알람을 받아오지 못했습니다. 그 폰도 새 버전이고 앱이 켜져 있는지 확인해주세요.";
+                remoteAlarms.put(rb.token, s);
+                if (curRemote() != null && curRemote().token.equals(rb.token)) renderAlarms();
+            }});
+        }});
+    }
+
+    private AlarmSink localSink(final String tok) {
+        return new AlarmSink() { public void apply(Map<String, String> o, String okMsg) {
+            try { Alarms.apply(prefs, tok, o); }
+            catch (IllegalArgumentException e) { toast(e.getMessage()); return; }
+            renderAlarms();
+            BedServer.Dev d = App.server().byToken(tok);
+            if (d == null) { toast("저장했습니다. 침대가 연결되면 바로 들어갑니다"); return; }
+            pushAlarms(tok);
+            if (okMsg != null) toast(okMsg);
+        }};
+    }
+
+    private AlarmSink remoteSink(final LanPeers.RemoteBed rb) {
+        return new AlarmSink() { public void apply(final Map<String, String> o, final String okMsg) {
+            toast("주인 폰에 저장하는 중…");
+            bg(new Runnable(){ public void run(){
+                final JSONObject r = lan.alarmSet(rb.peerIp, rb.token, o);
+                post(new Runnable(){ public void run(){
+                    if (r != null && r.optBoolean("ok", false)) {
+                        remoteAlarms.put(rb.token, Alarms.fromJson(r.optJSONObject("alarms")));
+                        renderAlarms();
+                        if (okMsg != null) toast(okMsg);
+                    } else {
+                        String m = r == null ? "" : r.optString("msg", "");
+                        toast(m.isEmpty() ? "바꾸지 못했습니다. " + (rb.phone.isEmpty() ? "주인 폰" : rb.phone) + " 도 새 버전으로 올려주세요" : m);
+                    }
+                }});
+            }});
+        }};
+    }
+
+    /** 알람 칸 그리기 — 반복 알람 2개 + 빠른 알람 + 알람 때 상체 높이. owner != null 이면 상대 침대 */
+    private void drawAlarms(final String tok, final Alarms.State st, final AlarmSink sink, String owner) {
         LinearLayout g = u.col();
         g.setBackground(u.box(u.card, u.line, 18));
         for (int i = 1; i <= Alarms.COUNT; i++) {
             if (i > 1) g.addView(u.hair());
-            g.addView(alarmRow(tok, i));
+            g.addView(alarmRow(i, st.al[i - 1], sink));
         }
         g.addView(u.hair());
-        g.addView(quickBlock(tok));
+        g.addView(quickBlock(tok, st, sink));
         g.addView(u.hair());
-        // 알람 때 상체 높이 (원래 앱의 '알람시 상체높이' 슬라이더)
+        // 알람 때 상체 높이 (원래 앱의 '알람시 상체높이' — 침대에 자리가 하나라 모든 알람 공통)
         LinearLayout hb = u.col();
         hb.setPadding(u.dp(16), u.dp(12), u.dp(16), u.dp(6));
         LinearLayout hd = new LinearLayout(this);
         hd.setOrientation(LinearLayout.HORIZONTAL);
-        hd.addView(u.text("알람 때 상체 높이", 14, u.muted, true), new LinearLayout.LayoutParams(0, -2, 1f));
-        final TextView hv = u.text(fmt("11", Alarms.height(prefs, tok)), 16, u.fg, true);
+        hd.addView(u.text("알람 때 상체 높이 (모든 알람 공통)", 14, u.muted, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        final TextView hv = u.text(fmt("11", st.height), 16, u.fg, true);
         hd.addView(hv);
         hb.addView(hd);
         final Slider hs = new Slider(this, u.line, u.accent, u.card, u.accent);
         hs.setMax(80);
-        hs.setValue(Alarms.height(prefs, tok));
+        hs.setValue(st.height);
         hs.setListener(new Slider.Listener() {
             public void onSlide(int v, boolean done) {
                 hv.setText(fmt("11", v));
-                if (done) { Alarms.setHeight(prefs, tok, v); pushAlarms(tok); }
+                if (done) sink.apply(op("op", "height", "v", String.valueOf(v)), "알람 때 상체 높이 " + fmt("11", v));
             }
-            public void onCancel() { hv.setText(fmt("11", Alarms.height(prefs, tok))); }
+            public void onCancel() { hv.setText(fmt("11", st.height)); }
         });
         hb.addView(hs, new LinearLayout.LayoutParams(-1, u.dp(46)));
-
-        // 알람 뒤 다시 눕히기 — 침대는 알람의 '종료' 시각에 다시 내려간다 (5.11.0 사용자 확인)
-        hb.addView(u.text("알람 뒤 다시 눕히기", 14, u.muted, true));
-        LinearLayout dr = u.row(4);
-        dr.setPadding(0, u.dp(8), 0, 0);
-        final List<Button> downBtns = new ArrayList<>();
-        final String[] shortNames = { "안 함", "5분", "10분", "30분", "1시간" };
-        for (int x = 0; x < Alarms.DOWN_CHOICES.length; x++) {
-            final int sec = Alarms.DOWN_CHOICES[x], idx = x;
-            Button bt = u.btn(shortNames[x], u.bg, u.fg, u.line, 12.5f, 8, null);
-            bt.setMinWidth(0); bt.setMinimumWidth(0);
-            bt.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
-                Alarms.setDown(prefs, tok, sec);
-                paintChoice(downBtns, idx);
-                pushAlarms(tok);
-                toast(sec == 0 ? "알람 뒤 올라간 채로 둡니다" : "알람 " + Alarms.DOWN_NAMES[idx] + " 다시 눕힙니다");
-            }});
-            downBtns.add(bt);
-            dr.addView(bt, u.w(1, 2));
-        }
-        int cur = 0;
-        for (int x = 0; x < Alarms.DOWN_CHOICES.length; x++) if (Alarms.DOWN_CHOICES[x] == Alarms.down(prefs, tok)) cur = x;
-        paintChoice(downBtns, cur);
-        hb.addView(dr);
         g.addView(hb);
         alarmBox.addView(g);
-        alarmBox.addView(u.note("알람은 침대가 스스로 실행합니다. 폰이 꺼져 있어도 됩니다. "
-                + "그 시각이 되면 상체를 위 높이까지 올리고, '다시 눕히기'를 골랐으면 그만큼 뒤에 내려갑니다. "
-                + "알람 1·2 는 매주 그 요일마다, 빠른 알람은 한 번만."));
+        alarmBox.addView(u.note(owner != null
+                ? "이 침대의 알람은 " + owner + " 에 저장되고, 그 폰이 침대에 넣어줍니다. 바꾸려면 그 폰의 앱이 켜져 있거나 '앱을 닫아도 대기'가 켜져 있어야 합니다."
+                : "알람은 침대가 스스로 실행합니다. 폰이 꺼져 있어도 됩니다. 알람 1·2 는 매주 그 요일마다, 빠른 알람은 한 번만."));
     }
 
-    // ── 빠른 알람 ("30분 뒤") — 침대의 알람 3 자리 ─────────────
-    private TextView quickLeft;          // "1시간 12분 뒤" — 1초마다 갱신
-    private String quickTok = null;
-
-    private View quickBlock(final String tok) {
-        LinearLayout qb = u.col();
-        qb.setPadding(u.dp(16), u.dp(12), u.dp(16), u.dp(10));
-        final long at = Alarms.quickAt(prefs, tok);
-        quickTok = tok;
-        if (at != 0) {
-            LinearLayout r = new LinearLayout(this);
-            r.setOrientation(LinearLayout.HORIZONTAL);
-            r.setGravity(Gravity.CENTER_VERTICAL);
-            LinearLayout col = u.col();
-            col.addView(u.text("빠른 알람   " + Alarms.clockText(at), 16, u.fg, true));
-            quickLeft = u.text(Alarms.leftText(at) + " 올라갑니다", 12.5f, u.accent, true);
-            col.addView(quickLeft);
-            r.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
-            TextView cancel = u.pill("취소", u.fg, u.bg, u.line);
-            cancel.setPadding(u.dp(16), u.dp(9), u.dp(16), u.dp(10));
-            cancel.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
-                Alarms.setQuick(prefs, tok, 0); renderAlarms(); pushAlarms(tok); toast("빠른 알람을 취소했습니다"); }});
-            r.addView(cancel, new LinearLayout.LayoutParams(-2, -2));
-            qb.addView(r);
-            return qb;
-        }
-        quickLeft = null;
-        qb.addView(u.text("빠른 알람 — 지금부터", 14, u.muted, true));
-        LinearLayout row = u.row(0);
-        row.setPadding(0, u.dp(8), 0, 0);
-        int[] mins = { 10, 30, 60, 120 };
-        String[] names = { "10분", "30분", "1시간", "2시간" };
-        for (int x = 0; x < mins.length; x++) {
-            final int m = mins[x];
-            Button b = u.btn(names[x], u.bg, u.fg, u.line, 13.5f, 9, new Runnable(){ public void run(){ setQuick(tok, m); }});
-            row.addView(b, u.w(1, 3));
-        }
-        qb.addView(row);
-        qb.addView(u.small("직접 정하기 (몇 시간 몇 분 뒤)", new Runnable(){ public void run(){ pickQuick(tok); }}));
-        return qb;
-    }
-
-    private void setQuick(String tok, int minutes) {
-        long at = System.currentTimeMillis() + minutes * 60000L;
-        Alarms.setQuick(prefs, tok, at);
-        renderAlarms(); pushAlarms(tok);
-        toast(Alarms.leftText(at) + " · " + Alarms.clockText(at) + " 에 올라갑니다");
-    }
-
-    /** 몇 시간 몇 분 뒤 — 고르는 동안 올라갈 시각을 보여준다 */
-    private void pickQuick(final String tok) {
-        LinearLayout box = u.col();
-        box.setPadding(u.dp(20), u.dp(8), u.dp(20), 0);
-        LinearLayout pr = new LinearLayout(this);
-        pr.setOrientation(LinearLayout.HORIZONTAL);
-        pr.setGravity(Gravity.CENTER);
-        final NumberPicker hp = new NumberPicker(this);
-        hp.setMinValue(0); hp.setMaxValue(23); hp.setValue(0);
-        final NumberPicker mp = new NumberPicker(this);
-        mp.setMinValue(0); mp.setMaxValue(59); mp.setValue(30);
-        pr.addView(hp); pr.addView(u.text("시간", 15, u.fg, true));
-        pr.addView(mp); pr.addView(u.text("분 뒤", 15, u.fg, true));
-        box.addView(pr);
-        final TextView when = u.text("", 15, u.accent, true);
-        when.setGravity(Gravity.CENTER);
-        when.setPadding(0, u.dp(10), 0, 0);
-        box.addView(when);
-        final Runnable upd = new Runnable(){ public void run(){
-            int m = hp.getValue() * 60 + mp.getValue();
-            when.setText(m < 1 ? "1분 이상으로 골라주세요"
-                    : "→ " + Alarms.clockText(System.currentTimeMillis() + m * 60000L) + " 에 올라갑니다");
-        }};
-        NumberPicker.OnValueChangeListener l = new NumberPicker.OnValueChangeListener() {
-            public void onValueChange(NumberPicker p, int o, int n) { upd.run(); } };
-        hp.setOnValueChangedListener(l); mp.setOnValueChangedListener(l);
-        upd.run();
-        new android.app.AlertDialog.Builder(this)
-            .setTitle("빠른 알람")
-            .setView(box)
-            .setPositiveButton("맞추기", new android.content.DialogInterface.OnClickListener() {
-                public void onClick(android.content.DialogInterface d, int w) {
-                    int m = hp.getValue() * 60 + mp.getValue();
-                    if (m < 1) { toast("1분 이상으로 골라주세요"); return; }
-                    setQuick(tok, m);
-                } })
-            .setNegativeButton("취소", null).show();
-    }
-
-    /** 1초마다 — 빠른 알람 남은 시간을 고치고, 시각이 지나면 칸을 되돌린다 */
-    private void tickQuick() {
-        if (quickTok == null || alarmBox == null) return;
-        Beds.Bed b = cur();
-        if (b == null || !b.token.equals(quickTok)) return;
-        if (quickLeft == null) return;
-        long at = Alarms.quickAt(prefs, quickTok);
-        if (at == 0) {
-            // 울리고 2분 반 지났다 — 침대의 알람 3 자리를 끈다 (안 끄면 다음 주 같은 시각에 또 울린다)
-            renderAlarms();
-            final BedServer.Dev d = App.server().byToken(quickTok);
-            if (d != null) sendQ.execute(new Runnable(){ public void run(){ Alarms.push(MainActivity.this, d); }});
-            return;
-        }
-        quickLeft.setText(Alarms.leftText(at) + " 올라갑니다");
-    }
-
-    private View alarmRow(final String tok, final int i) {
-        final Alarms.A a = Alarms.get(prefs, tok, i);
+    private View alarmRow(final int i, final Alarms.A a, final AlarmSink sink) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -2161,16 +2121,15 @@ public class MainActivity extends Activity {
         row.setMinimumHeight(u.rawDp(56));
         LinearLayout col = u.col();
         col.addView(u.text("알람 " + i + "   " + Alarms.hm(a.start), 16, a.on ? u.fg : u.muted, true));
-        col.addView(u.text(Alarms.daysText(a.days), 12.5f, u.muted, false));
+        col.addView(u.text(Alarms.daysText(a.days) + " · " + Alarms.downText(a.down), 12.5f, u.muted, false));
         row.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
         TextView pill = u.pill(a.on ? "켜짐" : "꺼짐", a.on ? 0xFFFFFFFF : u.muted, a.on ? u.accent : u.bg, a.on ? 0 : u.line);
         pill.setPadding(u.dp(16), u.dp(9), u.dp(16), u.dp(10));
         pill.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
-            a.on = !a.on;
-            if (a.on && a.days == 0) a.days = 0x7F;
-            Alarms.put(prefs, tok, i, a);
-            renderAlarms(); pushAlarms(tok);
-            toast(a.on ? "알람 " + i + " 켰습니다 · " + Alarms.hm(a.start) : "알람 " + i + " 껐습니다");
+            boolean on = !a.on;
+            sink.apply(op("op", "alarm", "i", String.valueOf(i), "on", on ? "1" : "0",
+                          "days", String.valueOf(on && a.days == 0 ? 0x7F : a.days)),
+                    on ? "알람 " + i + " 켰습니다 · " + Alarms.hm(a.start) : "알람 " + i + " 껐습니다");
         }});
         pill.setContentDescription("알람 " + i + (a.on ? " 끄기" : " 켜기"));
         row.addView(pill, new LinearLayout.LayoutParams(-2, -2));
@@ -2178,13 +2137,14 @@ public class MainActivity extends Activity {
         row.setBackground(new android.graphics.drawable.RippleDrawable(
                 android.content.res.ColorStateList.valueOf(u.dark ? 0x33FFFFFF : 0x22000000), null,
                 new android.graphics.drawable.ColorDrawable(0xFFFFFFFF)));
-        row.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { editAlarm(tok, i); }});
+        row.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { editAlarm(i, a, sink); }});
         return row;
     }
 
-    /** 알람 하나 고치기 — 시각, 요일 */
-    private void editAlarm(final String tok, final int i) {
-        final Alarms.A a = Alarms.get(prefs, tok, i);
+    /** 알람 하나 고치기 — 시각, 요일, 다시 눕히기 */
+    private void editAlarm(final int i, Alarms.A orig, final AlarmSink sink) {
+        final Alarms.A a = new Alarms.A();
+        a.on = orig.on; a.start = orig.start; a.days = orig.days; a.down = orig.down;
         LinearLayout box = u.col();
         box.setPadding(u.dp(20), u.dp(8), u.dp(20), 0);
 
@@ -2213,6 +2173,9 @@ public class MainActivity extends Activity {
         paintDays(dayBtns, a.days);
         box.addView(dayRow);
 
+        box.addView(u.text("올라간 뒤 다시 눕히기", 13, u.muted, true));
+        box.addView(downRow(a.down, new DownPick() { public void picked(int sec) { a.down = sec; }}));
+
         new android.app.AlertDialog.Builder(this)
             .setTitle("알람 " + i)
             .setView(box)
@@ -2220,14 +2183,152 @@ public class MainActivity extends Activity {
                 public void onClick(android.content.DialogInterface d, int w) {
                     if (a.days == 0) { toast("요일을 하나 이상 골라주세요"); return; }
                     a.on = true;
-                    Alarms.put(prefs, tok, i, a);
-                    renderAlarms(); pushAlarms(tok);
-                    toast("알람 " + i + " · " + Alarms.describe(a));
+                    sink.apply(op("op", "alarm", "i", String.valueOf(i), "on", "1", "start", String.valueOf(a.start),
+                                  "days", String.valueOf(a.days), "down", String.valueOf(a.down)),
+                            "알람 " + i + " · " + Alarms.describe(a));
                 } })
             .setNeutralButton("끄기", new android.content.DialogInterface.OnClickListener() {
                 public void onClick(android.content.DialogInterface d, int w) {
-                    a.on = false; Alarms.put(prefs, tok, i, a); renderAlarms(); pushAlarms(tok); } })
+                    sink.apply(op("op", "alarm", "i", String.valueOf(i), "on", "0"), "알람 " + i + " 껐습니다"); } })
             .setNegativeButton("취소", null).show();
+    }
+
+    private interface DownPick { void picked(int sec); }
+
+    /** '다시 눕히기' 고르는 줄: 안 함 · 5분 · 10분 · 30분 · 1시간 */
+    private View downRow(int current, final DownPick pick) {
+        LinearLayout dr = u.row(4);
+        dr.setPadding(0, u.dp(6), 0, 0);
+        final List<Button> bs = new ArrayList<>();
+        int on = 0;
+        for (int x = 0; x < Alarms.DOWN_CHOICES.length; x++) {
+            final int sec = Alarms.DOWN_CHOICES[x], idx = x;
+            if (sec == current) on = x;
+            Button bt = u.btn(Alarms.DOWN_SHORT[x], u.bg, u.fg, u.line, 12.5f, 8, null);
+            bt.setMinWidth(0); bt.setMinimumWidth(0);
+            bt.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                paintChoice(bs, idx); pick.picked(sec); }});
+            bs.add(bt);
+            dr.addView(bt, u.w(1, 2));
+        }
+        paintChoice(bs, on);
+        return dr;
+    }
+
+    // ── 빠른 알람 ("30분 뒤") — 침대의 알람 3 자리 ─────────────
+    private TextView quickLeft;          // "1시간 12분 뒤" — 1초마다 갱신
+    private String quickTok = null;
+    private long quickShownAt = 0;       // 화면에 그린 빠른 알람 시각
+    private int quickShownDown = 0;
+
+    private View quickBlock(final String tok, final Alarms.State st, final AlarmSink sink) {
+        LinearLayout qb = u.col();
+        qb.setPadding(u.dp(16), u.dp(12), u.dp(16), u.dp(10));
+        quickTok = tok;
+        quickShownAt = st.quickAt;
+        quickShownDown = st.quickDown;
+        if (st.quickAt != 0) {
+            LinearLayout r = new LinearLayout(this);
+            r.setOrientation(LinearLayout.HORIZONTAL);
+            r.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout col = u.col();
+            col.addView(u.text("빠른 알람   " + Alarms.clockText(st.quickAt), 16, u.fg, true));
+            quickLeft = u.text(Alarms.leftText(st.quickAt) + " 올라갑니다 · " + Alarms.downText(st.quickDown), 12.5f, u.accent, true);
+            col.addView(quickLeft);
+            r.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+            TextView cancel = u.pill("취소", u.fg, u.bg, u.line);
+            cancel.setPadding(u.dp(16), u.dp(9), u.dp(16), u.dp(10));
+            cancel.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                sink.apply(op("op", "quickoff"), "빠른 알람을 취소했습니다"); }});
+            r.addView(cancel, new LinearLayout.LayoutParams(-2, -2));
+            qb.addView(r);
+            return qb;
+        }
+        qb.addView(u.text("빠른 알람 — 지금부터 (한 번만)", 14, u.muted, true));
+        // 10분 · 30분 · 1시간 · 2시간 + 마지막으로 직접 정한 시간 (사용자 결정 5.12.0)
+        List<Integer> mins = new ArrayList<>(Arrays.asList(10, 30, 60, 120));
+        int last = prefs.getInt("qaLastMin", 0);
+        if (last > 0 && !mins.contains(last)) mins.add(last);
+        LinearLayout row = u.row(0);
+        row.setPadding(0, u.dp(8), 0, 0);
+        for (final int m : mins) {
+            Button b = u.btn(Alarms.minText(m).replace("시간 ", "시간\n"), u.bg, u.fg, u.line, 13f, 8,
+                    new Runnable(){ public void run(){ setQuick(sink, m, st.quickDown); }});
+            b.setMinWidth(0); b.setMinimumWidth(0);
+            row.addView(b, u.w(1, 2));
+        }
+        qb.addView(row);
+        qb.addView(u.small("직접 정하기 (몇 시간 몇 분 뒤)", new Runnable(){ public void run(){ pickQuick(sink, st.quickDown); }}));
+        qb.addView(u.text("올라간 뒤 다시 눕히기", 13, u.muted, true));
+        qb.addView(downRow(st.quickDown, new DownPick() { public void picked(int sec) {
+            sink.apply(op("op", "quickdown", "v", String.valueOf(sec)), null); }}));
+        return qb;
+    }
+
+    private void setQuick(AlarmSink sink, int minutes, int down) {
+        long at = System.currentTimeMillis() + minutes * 60000L;
+        sink.apply(op("op", "quick", "min", String.valueOf(minutes), "down", String.valueOf(down)),
+                Alarms.leftText(at) + " · " + Alarms.clockText(at) + " 에 올라갑니다");
+    }
+
+    /** 몇 시간 몇 분 뒤 — 고르는 동안 올라갈 시각을 보여준다. 정한 시간은 다음에 버튼으로 남는다 */
+    private void pickQuick(final AlarmSink sink, final int down) {
+        LinearLayout box = u.col();
+        box.setPadding(u.dp(20), u.dp(8), u.dp(20), 0);
+        LinearLayout pr = new LinearLayout(this);
+        pr.setOrientation(LinearLayout.HORIZONTAL);
+        pr.setGravity(Gravity.CENTER);
+        int last = prefs.getInt("qaLastMin", 30);
+        final NumberPicker hp = new NumberPicker(this);
+        hp.setMinValue(0); hp.setMaxValue(23); hp.setValue(last / 60);
+        final NumberPicker mp = new NumberPicker(this);
+        mp.setMinValue(0); mp.setMaxValue(59); mp.setValue(last % 60);
+        pr.addView(hp); pr.addView(u.text("시간", 15, u.fg, true));
+        pr.addView(mp); pr.addView(u.text("분 뒤", 15, u.fg, true));
+        box.addView(pr);
+        final TextView when = u.text("", 15, u.accent, true);
+        when.setGravity(Gravity.CENTER);
+        when.setPadding(0, u.dp(10), 0, 0);
+        box.addView(when);
+        final Runnable upd = new Runnable(){ public void run(){
+            int m = hp.getValue() * 60 + mp.getValue();
+            when.setText(m < 1 ? "1분 이상으로 골라주세요"
+                    : "→ " + Alarms.clockText(System.currentTimeMillis() + m * 60000L) + " 에 올라갑니다");
+        }};
+        NumberPicker.OnValueChangeListener l = new NumberPicker.OnValueChangeListener() {
+            public void onValueChange(NumberPicker p, int o, int n) { upd.run(); } };
+        hp.setOnValueChangedListener(l); mp.setOnValueChangedListener(l);
+        upd.run();
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("빠른 알람")
+            .setView(box)
+            .setPositiveButton("맞추기", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    int m = hp.getValue() * 60 + mp.getValue();
+                    if (m < 1) { toast("1분 이상으로 골라주세요"); return; }
+                    prefs.edit().putInt("qaLastMin", m).apply();    // 다음에 버튼으로 남긴다
+                    setQuick(sink, m, down);
+                } })
+            .setNegativeButton("취소", null).show();
+    }
+
+    /** 1초마다 — 빠른 알람 남은 시간을 고치고, 다 끝나면 칸을 되돌린다 */
+    private void tickQuick() {
+        if (quickTok == null || quickLeft == null || quickShownAt == 0) return;
+        if (!quickTok.equals(curToken())) return;
+        if (System.currentTimeMillis() > quickShownAt + Alarms.keepMs(quickShownDown)) {
+            // 울리고 다시 눕히기까지 끝났다 — 침대의 알람 3 자리를 끈다 (안 끄면 다음 주 같은 시각에 또 울린다)
+            final String tok = quickTok;
+            quickShownAt = 0;
+            if (cur() != null) {
+                Alarms.quickAt(prefs, tok);          // 저장소에서 지운다
+                final BedServer.Dev d = App.server().byToken(tok);
+                if (d != null) sendQ.execute(new Runnable(){ public void run(){ Alarms.push(MainActivity.this, d); }});
+            } else remoteAlarms.remove(tok);         // 상대 침대는 주인 폰이 끈다 — 다시 받아온다
+            renderAlarms();
+            return;
+        }
+        quickLeft.setText(Alarms.leftText(quickShownAt) + " 올라갑니다 · " + Alarms.downText(quickShownDown));
     }
 
     private void paintChoice(List<Button> bs, int on) {
@@ -2249,7 +2350,7 @@ public class MainActivity extends Activity {
     /** 바뀐 알람을 침대에 바로 넣는다. 침대가 연결돼 있지 않으면 다음에 접속할 때 들어간다 */
     private void pushAlarms(final String tok) {
         final BedServer.Dev d = App.server().byToken(tok);
-        if (d == null) { toast("저장했습니다. 침대가 연결되면 바로 들어갑니다"); return; }
+        if (d == null) return;
         sendQ.execute(new Runnable(){ public void run(){ Alarms.push(MainActivity.this, d); }});
     }
 

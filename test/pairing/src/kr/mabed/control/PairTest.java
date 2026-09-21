@@ -6,6 +6,7 @@ import java.io.*;
 import java.lang.reflect.*;
 import java.net.*;
 import java.util.*;
+import org.json.JSONObject;
 
 /** 9099 짝짓기·도장 통합 시험 — 실제 ApiServer / LanPeers / HomeKey / BedServer 를 PC 에서 돌린다 */
 public class PairTest {
@@ -88,6 +89,24 @@ public class PairTest {
         synchronized (peers) { peers.put(ip, p); }
     }
 
+    static Map<String, String> op(String... kv) {
+        Map<String, String> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2) m.put(kv[i], kv[i + 1]);
+        return m;
+    }
+
+    /** 가짜 침대가 받은 알람 넣기 7개(V1·V5·V2·V6·V3·V7·V12)를 읽어 {핀: 값} 으로 */
+    static Map<String, String> readPush(DataInputStream bi) throws IOException {
+        Map<String, String> m = new LinkedHashMap<>();
+        for (int n = 0; n < 7; n++) {
+            byte[] h = new byte[5]; bi.readFully(h);
+            byte[] body = new byte[((h[3] & 0xFF) << 8) | (h[4] & 0xFF)]; bi.readFully(body);
+            String[] p = new String(body, "UTF-8").split("\0", 3);
+            if (p.length == 3 && p[0].equals("vw")) m.put(p[1], p[2].replace('\0', '|'));
+        }
+        return m;
+    }
+
     static String home(String base) throws Exception {
         return new org.json.JSONObject(get(base + "/hello")).optString("home", "?");
     }
@@ -100,9 +119,9 @@ public class PairTest {
         String base = "http://" + ip + ":" + ApiServer.PORT;
         final String TOKEN = "0123456789abcdef0123456789abcdef";
         File dir = new File(a[0]);
-        new File(dir, "busy.flag").delete(); new File(dir, "closed.flag").delete();
+        new File(dir, "busy.flag").delete(); new File(dir, "closed.flag").delete(); new File(dir, "alarm.flag").delete();
 
-        ProcessBuilder pb = new ProcessBuilder(a[1], "-Dstdout.encoding=UTF-8", "-cp", a[2],
+        ProcessBuilder pb = new ProcessBuilder(a[1], "-Dstdout.encoding=UTF-8", "-Duser.timezone=Asia/Seoul", "-cp", a[2],
                 "kr.mabed.control.PairServer", dir.getAbsolutePath(), TOKEN);
         pb.redirectErrorStream(true);
         Process srv = pb.start();
@@ -222,6 +241,50 @@ public class PairTest {
         boolean leaked = false;
         try { bi.readFully(hh); leaked = true; } catch (SocketTimeoutException ok) {}
         check("그 명령은 침대에 가지 않음", !leaked, "");
+
+        bed.setSoTimeout(4000);
+
+        System.out.println("\n[9] 상대 침대 알람 — 내 폰에서 보고 바꾸기 (5.12.0)");
+        JSONObject al = cl.alarms(ip, TOKEN);
+        check("알람 시험 전 — 받아오기는 됨 · 준비 안 됨", al != null && al.optString("clock").isEmpty(), al);
+        JSONObject rs = cl.alarmSet(ip, TOKEN, op("op", "alarm", "i", "1", "on", "1", "start", "25200", "days", "31", "down", "0"));
+        check("알람 시험 전 — 바꾸기는 거절", !rs.optBoolean("ok") && rs.optString("msg").contains("알람 시험"), rs);
+        new File(dir, "alarm.flag").createNewFile(); Thread.sleep(300);
+        al = cl.alarms(ip, TOKEN);
+        check("시험 뒤 — 시계 utc", al != null && "utc".equals(al.optString("clock")), al);
+        check("옛 공통 '다시 눕히기'(10분)가 알람마다로 옮겨짐",
+                al.getJSONArray("alarms").getJSONObject(0).optInt("down") == 600 && al.optInt("quickDown") == 600, al);
+
+        rs = cl.alarmSet(ip, TOKEN, op("op", "alarm", "i", "1", "on", "1", "start", "25200", "days", "31", "down", "0"));
+        check("알람 1 = 평일 07:00 · 올라간 채로 → 저장", rs.optBoolean("ok")
+                && rs.getJSONObject("alarms").getJSONArray("alarms").getJSONObject(0).optBoolean("on"), rs);
+        Map<String, String> pushed = readPush(bi);
+        check("주인 폰이 침대에 넣은 알람 1 = UTC 일~목 22:00, 눕힘은 다음 날 1분 전", "79200|79140|UTC|1,2,3,4,7|0".equals(pushed.get("1")), pushed);
+        check("알람 1 켜짐(V5=1) · 알람 2 꺼짐(V6=0) · 높이(V12) 도 같이", "1".equals(pushed.get("5")) && "0".equals(pushed.get("6")) && pushed.containsKey("12"), pushed);
+
+        rs = cl.alarmSet(ip, TOKEN, op("op", "quick", "min", "30", "down", "300"));
+        JSONObject a2 = rs.optJSONObject("alarms");
+        check("빠른 알람 30분 · 5분 뒤 눕힘 → 저장", rs.optBoolean("ok") && a2.optBoolean("quick")
+                && Math.abs(a2.optLong("quickLeft") - 1800000) < 5000 && a2.optInt("quickDown") == 300, rs);
+        pushed = readPush(bi);
+        String v3 = pushed.get("3");
+        check("침대에 빠른 알람(V3) 켜짐, 눕힘 = 시작 + 5분", "1".equals(pushed.get("7")) && v3 != null
+                && Integer.parseInt(v3.split("\\|")[1]) == (Integer.parseInt(v3.split("\\|")[0]) + 300) % 86400, pushed);
+        rs = cl.alarmSet(ip, TOKEN, op("op", "quickoff"));
+        pushed = readPush(bi);
+        check("빠른 알람 취소 → V7=0", rs.optBoolean("ok") && "0".equals(pushed.get("7")), pushed);
+
+        rs = cl.alarmSet(ip, TOKEN, op("op", "alarm", "i", "3", "on", "1"));
+        check("잘못된 알람 번호(3) 거절 — 3번 자리는 빠른 알람", !rs.optBoolean("ok"), rs);
+        rs = cl.alarmSet(ip, TOKEN, op("op", "alarm", "i", "1", "down", "777"));
+        check("선택지에 없는 눕히기 값 거절", !rs.optBoolean("ok"), rs);
+        rs = cl.alarmSet(ip, TOKEN, op("op", "height", "v", "200"));
+        check("높이 범위 밖(200) 거절", !rs.optBoolean("ok"), rs);
+        rs = cl.alarmSet(ip, "ffffffffffffffffffffffffffffffff", op("op", "height", "v", "40"));
+        check("주인 폰에 없는 침대는 거절", !rs.optBoolean("ok") && rs.optString("msg").contains("없는 침대"), rs);
+        rs = stranger.alarmSet(ip, TOKEN, op("op", "height", "v", "80"));
+        check("다른 열쇠를 가진 폰은 알람을 못 바꿈", !rs.optBoolean("ok"), rs);
+        check("다른 열쇠를 가진 폰은 알람을 못 봄", stranger.alarms(ip, TOKEN) == null, "");
 
         System.out.println("\n[8] 짝 풀기");
         HomeKey.clear(C);

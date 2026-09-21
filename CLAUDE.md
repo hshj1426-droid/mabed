@@ -43,7 +43,7 @@ src/kr/mabed/control/
   HomeKey.java       집 열쇠(짝짓기)·도장 만들기/확인
   Beds.java          등록 침대 목록 (prefs "beds" JSON)
   Net.java           와이파이 주소, 침대 AP 통신, isLan()
-  Alarms.java        침대 자체 알람(V1~V7, V12). 침대가 붙을 때마다 넣어준다. 시계 방식(local/utc) 시험 전엔 아무것도 안 보냄
+  Alarms.java        침대 자체 알람(V1~V7, V12). 반복 2 + 빠른 1, 다시 눕히기 알람마다. 침대가 붙을 때마다 넣어준다. 시계 방식 시험 전엔 아무것도 안 보냄. apply(op) 하나로 화면·다른 폰(/alarmset)이 고친다
   Updates.java       깃허브 릴리스로 새 버전 확인 (REPO = hshj1426-droid/mabed)
   Updater.java       새 버전 내려받기(진행 표시) → 안드로이드 기본 설치 화면(ACTION_VIEW). 앱을 켤 때 확인하고 묻는다
   ApkProvider.java   받은 APK 를 설치 화면에 건네는 창구 (FileProvider 대신 직접, exported=false). PackageInstaller 세션 방식은 사용자 폰에서 멈춰서 5.9.2 에 버림

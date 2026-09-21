@@ -138,6 +138,9 @@ V1(알람1)·V2(알람2)·V5·V6(켜기)·V12(높이) 핀이 맞다는 것도 �
   - `GET /state` → 폰 이름, 그 폰에 붙은 침대들(이름·인증키·online)과 핀 값, `age` = 핀 값을 받은 지 몇 ms (5.4.0부터, 폰끼리 시계가 달라 나이로).
   - `GET /cmd?token=&pin=&val=` → 그 침대에 명령. `val=read` 이면 `vr` 을 보낸다. 답 `{"ok":false}` = 침대가 안 붙어 있음.
   - `GET /rename?token=&name=` → 주인 폰에 저장된 침대 이름을 바꾼다 (5.4.0부터).
+  - `GET /alarms?token=` → 그 침대의 알람 `{"ok":true,"alarms":{clock, height, alarms:[{on,start,days,down}×2], quick, quickLeft(ms), quickDown}}` (5.12.0).
+  - `GET /alarmset?token=&op=…` → 알람 바꾸기. op = `alarm&i=1..2[&on][&start][&days][&down]` · `height&v=` · `quick&min=[&down]` · `quickoff` · `quickdown&v=`.
+    주인 폰이 저장하고 침대가 붙어 있으면 바로 넣는다. 알람 시험 전이면 `{"ok":false,"msg":…}`.
   - 응답에 `Access-Control-Allow-Origin` 을 붙이지 않는다 (5.9.0 — 집 안 브라우저로 연 웹페이지가 명령을 보내는 것 막기).
 - 남은 한계: 침대↔폰 8080 은 펌웨어가 정한 방식이라 잠글 수 없다. 인증키를 아는 사람은 가짜 침대로 접속해 진짜 연결을 끊을 수 있다.
   5.9.0부터 인증키는 짝지은 폰에게만 알려주므로 새어 나갈 길은 크게 줄었다.

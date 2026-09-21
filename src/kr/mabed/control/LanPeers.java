@@ -252,6 +252,28 @@ public class LanPeers {
         } catch (Exception e) { return false; }
     }
 
+    /** 이웃 폰 침대의 알람을 받아온다 (5.12.0). 못 받으면 null */
+    public JSONObject alarms(String peerIp, String token) {
+        try {
+            JSONObject o = new JSONObject(http(signedUrl(peerIp, "/alarms?token=" + enc(token)), 4000));
+            return o.optBoolean("ok", false) ? o.optJSONObject("alarms") : null;
+        } catch (Exception e) { return null; }
+    }
+
+    /** 이웃 폰 침대의 알람을 바꾼다. 돌려주는 값: {"ok":true,"alarms":{…}} 또는 {"ok":false,"msg":…}.
+     *  op 는 Alarms.apply 와 같은 모양 (op=alarm&i=1&on=1 …) */
+    public JSONObject alarmSet(String peerIp, String token, Map<String,String> op) {
+        try {
+            StringBuilder q = new StringBuilder("/alarmset?token=").append(enc(token));
+            for (Map.Entry<String,String> e : op.entrySet())
+                if (!e.getKey().equals("token")) q.append('&').append(enc(e.getKey())).append('=').append(enc(e.getValue()));
+            return new JSONObject(http(signedUrl(peerIp, q.toString()), 6000));
+        } catch (Exception e) {
+            try { return new JSONObject().put("ok", false).put("msg", "주인 폰에 닿지 않습니다. 그 폰 앱이 켜져 있는지 확인해주세요"); }
+            catch (JSONException ignored) { return null; }
+        }
+    }
+
     /** 집 열쇠 도장을 찍은 주소: ...&ts=<지금>&sig=<앞부분 전체의 HMAC> */
     private String signedUrl(String ip, String path) {
         String base = path + (path.indexOf('?') < 0 ? "?" : "&") + "ts=" + System.currentTimeMillis();

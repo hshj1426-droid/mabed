@@ -18,6 +18,10 @@ public class ApiServer {
         boolean rename(String token, String name);
         /** 집 열쇠 (없으면 ""). create 면 없을 때 새로 만든다 */
         String homeKey(boolean create);
+        /** 이 폰에 등록된 침대의 알람 (없는 침대면 null) */
+        String alarms(String token);
+        /** 알람 바꾸기 → 바뀐 알람. 잘못된 요청이면 IllegalArgumentException, 없는 침대면 null */
+        String alarmSet(String token, Map<String,String> op);
     }
 
     private ServerSocket server;
@@ -86,6 +90,8 @@ public class ApiServer {
                 else if (path.startsWith("/state")) body = state();
                 else if (path.startsWith("/cmd")) body = cmd(query(path));
                 else if (path.startsWith("/rename")) body = rename(query(path));
+                else if (path.startsWith("/alarmset")) body = alarmSet(query(path));
+                else if (path.startsWith("/alarms")) body = alarms(query(path));
                 else body = "{\"ok\":false}";
             }
             byte[] out = body.getBytes("UTF-8");
@@ -226,6 +232,22 @@ public class ApiServer {
         if ("read".equals(val)) ok = App.server().read(d, pin);
         else ok = App.server().write(d, pin, val == null ? "1" : val);
         return "{\"ok\":" + ok + "}";
+    }
+
+    /** 짝지은 폰이 이 폰 침대의 알람을 본다 (5.12.0) */
+    private String alarms(Map<String,String> q) {
+        String a = host.alarms(q.get("token"));
+        return a == null ? "{\"ok\":false,\"msg\":\"이 폰에 없는 침대입니다\"}" : "{\"ok\":true,\"alarms\":" + a + "}";
+    }
+
+    /** 짝지은 폰이 이 폰 침대의 알람을 바꾼다 — 저장하고 침대에 넣는다 */
+    private String alarmSet(Map<String,String> q) {
+        try {
+            String a = host.alarmSet(q.get("token"), q);
+            return a == null ? "{\"ok\":false,\"msg\":\"이 폰에 없는 침대입니다\"}" : "{\"ok\":true,\"alarms\":" + a + "}";
+        } catch (IllegalArgumentException e) {
+            return "{\"ok\":false,\"msg\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
+        }
     }
 
     private String rename(Map<String,String> q) {

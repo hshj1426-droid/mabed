@@ -10,7 +10,9 @@ public class PairServer {
         final File dir = new File(a[0]);
         PairTest.Ctx S = new PairTest.Ctx();
         S.p.edit().putString("phoneName", "서버폰").putString("phoneId", "srv00001")
-                .putString("beds", "[{\"name\":\"아내 침대\",\"token\":\"" + a[1] + "\"}]").apply();
+                .putString("beds", "[{\"name\":\"아내 침대\",\"token\":\"" + a[1] + "\"}]")
+                .putInt("b_" + a[1] + "_alDown", 600)          // 5.11.1 의 공통 '다시 눕히기' — 알람마다 따로로 옮겨지는지 본다
+                .apply();
         App.server().start();
         App.startNet(S);
         App.uiVisible = true;
@@ -22,6 +24,8 @@ public class PairServer {
             if (wantBusy && !busy) { App.pairOutStart(); busy = true; }
             if (!wantBusy && busy) { App.pairOutEnd(); busy = false; }
             App.uiVisible = !new File(dir, "closed.flag").exists();
+            // alarm.flag 가 생기면 '알람 시험을 마친 침대'가 된다 (그 전엔 알람을 절대 보내지 않으니 앞 시험을 흐리지 않는다)
+            if (new File(dir, "alarm.flag").exists() && !Alarms.ready(S.p, a[1])) Alarms.setClock(S.p, a[1], "utc");
             App.PairReq r = App.pendingPair();
             if (r != null && !r.shown) {
                 r.shown = true;
