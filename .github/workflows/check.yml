@@ -1,0 +1,52 @@
+name: 점검
+
+# main 에 올릴 때마다: 비밀이 새지 않았는지 · 컴파일되는지 · 짝짓기(9099 잠금) 시험이 통과하는지.
+# 서명은 하지 않는다 (서명·배포는 build.yml — 릴리스 발행 때만).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # 공개 저장소다. 서명 키·비밀번호·토큰·집 와이파이 이름이 들어가면 안 된다
+      - name: 비밀이 새지 않았는지
+        run: |
+          if git grep -n -I -e 'mabed123' -e 'ghp_' -e 'gho_' -e 'U+Net' -e 'iptimeSmallRoom' \
+               -- . ':!.github/workflows/check.yml'; then
+            echo "::error::비밀번호·토큰·집 와이파이 이름이 저장소에 들어 있습니다"; exit 1
+          fi
+          if git ls-files | grep -E '\.(jks|keystore|apk)$|ks_pass|HANDOVER'; then
+            echo "::error::서명 키·APK·인수인계서는 저장소에 올리면 안 됩니다"; exit 1
+          fi
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0'
+
+      - name: 컴파일 (서명 없이)
+        run: |
+          BT=$ANDROID_HOME/build-tools/35.0.0; PLAT=$ANDROID_HOME/platforms/android-35/android.jar
+          mkdir -p w/gen w/cls w/dex
+          $BT/aapt2 compile --dir res -o w/res.zip
+          $BT/aapt2 link -o w/base.apk -I $PLAT --manifest AndroidManifest.xml \
+            --min-sdk-version 24 --target-sdk-version 35 --java w/gen w/res.zip
+          javac --release 17 -encoding UTF-8 -nowarn -classpath $PLAT -d w/cls $(find src w/gen -name '*.java')
+          $BT/d8 --lib $PLAT --output w/dex $(find w/cls -name '*.class')
+          ls -l w/dex/classes.dex
+
+      # 실제 ApiServer·LanPeers·HomeKey·BedServer 를 두 프로그램으로 돌려 35가지 확인 (docs/HISTORY.md 5.9.1)
+      - name: 짝짓기 시험
+        run: |
+          curl -fsSL -o json.jar https://repo1.maven.org/maven2/org/json/json/20250517/json-20250517.jar
+          bash test/pairing/run.sh "$ANDROID_HOME/platforms/android-35/android.jar" json.jar

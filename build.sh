@@ -36,7 +36,7 @@ mkdir -p build/classes build/dex build/gen build/res
   --min-sdk-version 24 --target-sdk-version 35 \
   --java build/gen build/res.zip
 
-javac --release 17 -nowarn -classpath "$PLAT" -d build/classes \
+javac --release 17 -encoding UTF-8 -nowarn -classpath "$PLAT" -d build/classes \
   $(find src build/gen -name '*.java')
 
 "$BT/d8" --lib "$PLAT" --output build/dex $(find build/classes -name '*.class')

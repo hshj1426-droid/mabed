@@ -59,7 +59,7 @@ res/                 아이콘과 앱 이름뿐
 ## 빌드
 
 ```
-./build.sh 5.3.0          # → build/mabed-5.3.0.apk
+./build.sh 5.9.1          # → build/mabed-5.9.1.apk
 ```
 
 - 필요: `~/android-sdk` (또는 `ANDROID_HOME`)에 build-tools 35.0.0, platforms/android-35. JDK 17+.
@@ -83,7 +83,8 @@ unzip -p build/mabed-X.apk classes.dex | strings | grep kr/mabed/control   # 새
 ## 배포
 
 - 사용자에게 APK를 직접 주거나,
-- 깃허브에서 **릴리스를 발행**하면(태그 `v5.4.0` 형식) Actions가 APK를 만들어 그 릴리스에 붙인다. 앱은 켤 때(1시간 간격) 최신 릴리스를 확인해 설치할지 묻는다. 설정 → 새 버전 확인하고 설치.
+- `main` 에 올리면 **점검**(check.yml: 비밀 유출 검사·컴파일·짝짓기 시험)이 돈다. 빨간불이면 릴리스하지 말 것.
+- 깃허브에서 **릴리스를 발행**하면(태그 `v<versionName>` 형식, 다르면 빌드가 멈춤) Actions가 서명한 APK를 만들어 그 릴리스에 붙인다. 앱은 켤 때(1시간 간격) 최신 릴리스를 확인해 설치할지 묻는다. 설정 → 새 버전 확인하고 설치.
 - 금고(Secrets)에 `KEYSTORE_B64`(키 파일을 base64), `KEYSTORE_PASS`가 있어야 한다.
 
 ## 침대 핀 요약
