@@ -43,7 +43,7 @@ public class App {
         if (SERVER == null) {
             SERVER = new BedServer(new BedServer.Listener() {
                 public void onLog(String kind, String text) { addLog(kind, text); }
-                public void onDevices(List<BedServer.Dev> d) { ping(); }
+                public void onDevices(List<BedServer.Dev> d) { ping(); ServerService.devicesChanged(); }
             });
         }
         return SERVER;

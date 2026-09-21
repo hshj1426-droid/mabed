@@ -70,6 +70,9 @@ public class MainActivity extends Activity {
             java.util.concurrent.Executors.newSingleThreadExecutor();
     private final java.util.concurrent.atomic.AtomicBoolean peerBusy =
             new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean askBusy =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private int pollCount = 0;
 
     /** 무드등·스피커처럼 침대가 값을 잘 안 알려주는 핀은 마지막으로 보낸 값을 기억해둔다 */
     private final Map<String, Integer> sentVal = new HashMap<>();
@@ -103,9 +106,12 @@ public class MainActivity extends Activity {
         setContentView(root);
         applyInsets();
 
-        if (Build.VERSION.SDK_INT >= 33)
+        // 알림 권한은 처음 한 번만 묻는다 (예전엔 앱을 켤 때마다 물었다)
+        if (Build.VERSION.SDK_INT >= 33 && !prefs.getBoolean("askedNotif", false)) {
+            prefs.edit().putBoolean("askedNotif", true).apply();
             try { requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1); }
             catch (Exception ignored) {}
+        }
 
         App.setCallback(new Runnable() { public void run() {
             ui.post(new Runnable() { public void run() { refresh(); } }); } });
@@ -939,7 +945,8 @@ public class MainActivity extends Activity {
         buildTabs();
         applyBedSpecific();
         refresh();
-        askNow();
+        pollCount = 0;          // 다음 확인 때 무드등·스피커 상태도 묻는다
+        askNow(true);
     }
 
     private View poseBtn(final String name, final int body, final int leg) {
@@ -1477,6 +1484,27 @@ public class MainActivity extends Activity {
         setBox.addView(u.note("문제가 생기면 연결 기록 화면을 캡처해서 보내주세요."));
     }
 
+    /** 침대 값 목록을 글자로. 침대 통신 스레드가 동시에 값을 넣을 수 있어서(그러면 앱이 죽는다)
+     *  충돌하면 몇 번 다시 시도한다 */
+    private static String pinsText(Map<String,String> pins) {
+        for (int tries = 0; tries < 5; tries++) {
+            try {
+                StringBuilder sb = new StringBuilder();
+                for (Map.Entry<String,String> e : pins.entrySet())
+                    sb.append("  ").append(e.getKey()).append('=').append(e.getValue());
+                return sb.toString();
+            } catch (ConcurrentModificationException retry) {
+                try { Thread.sleep(5); } catch (InterruptedException ignored) {}
+            }
+        }
+        return "  (값 읽기 실패)";
+    }
+
+    /** 화면이 닫히는 중이면 창을 띄우지 않는다 (닫힌 화면에 창을 띄우면 앱이 죽는다) */
+    private boolean alive() {
+        return !isFinishing() && !(Build.VERSION.SDK_INT >= 17 && isDestroyed());
+    }
+
     /** 문제 해결용 기록 — 예전 개발자 모드에서 쓸모 있던 부분만 남겼다 */
     private void showLog() {
         StringBuilder sb = new StringBuilder();
@@ -1486,8 +1514,7 @@ public class MainActivity extends Activity {
         for (Beds.Bed b : beds) {
             BedServer.Dev dd = App.server().byToken(b.token);
             sb.append(b.name).append("  ").append(dd == null ? "연결 안 됨" : dd.ip);
-            if (dd != null) for (Map.Entry<String,String> e : dd.pins.entrySet())
-                sb.append("  ").append(e.getKey()).append('=').append(e.getValue());
+            if (dd != null) sb.append(pinsText(dd.pins));
             sb.append('\n');
         }
         for (LanPeers.Peer p : lan.peers())
@@ -1518,7 +1545,8 @@ public class MainActivity extends Activity {
     private final Runnable poll = new Runnable() {
         public void run() {
             if (!ticking) return;
-            askNow();
+            // 20초에 한 번은 무드등·스피커 상태도 묻는다 (앱을 새로 켜면 늘 '꺼짐'으로 보이던 문제)
+            askNow(pollCount++ % 8 == 0);
             ui.postDelayed(this, 2500);
         } };
 
@@ -1581,23 +1609,26 @@ public class MainActivity extends Activity {
             ui.postDelayed(new Runnable(){ public void run(){ askNow(); }}, i * 900L);
     }
 
-    private void askNow() {
-        if (curRemote() != null) {
-            final LanPeers.RemoteBed r = curRemote();
-            final boolean tb = hasTable();
-            bg(new Runnable(){ public void run(){
-                lan.send(r.peerIp, r.token, "11", "read");
-                lan.send(r.peerIp, r.token, "13", "read");
-                if (tb) lan.send(r.peerIp, r.token, "14", "read"); }});
-            return;
-        }
-        final BedServer.Dev d = dev();
-        if (d == null) return;
+    private void askNow() { askNow(false); }
+
+    /** 침대에 지금 값을 묻는다. toggles 면 무드등·스피커 상태도 묻는다 (앱을 새로 켜면 모르니까).
+     *  앞의 질문이 아직 안 끝났으면 건너뛴다 — 이웃 폰이 느릴 때 질문 스레드가 쌓이지 않게 */
+    private void askNow(final boolean toggles) {
+        if (!askBusy.compareAndSet(false, true)) return;
+        final LanPeers.RemoteBed r = curRemote();
+        final BedServer.Dev d = r == null ? dev() : null;
+        if (r == null && d == null) { askBusy.set(false); return; }
         final boolean tb = hasTable();
         bg(new Runnable(){ public void run(){
-            App.server().read(d, "11");
-            App.server().read(d, "13");
-            if (tb) App.server().read(d, "14");
+            try {
+                List<String> pins = new ArrayList<>(Arrays.asList("11", "13"));
+                if (tb) pins.add("14");
+                if (toggles) { pins.add("52"); pins.add("61"); }
+                for (String p : pins) {
+                    if (r != null) lan.send(r.peerIp, r.token, p, "read");
+                    else App.server().read(d, p);
+                }
+            } finally { askBusy.set(false); }
         }});
     }
 
@@ -1880,6 +1911,7 @@ public class MainActivity extends Activity {
         Updates.check(this, ui, new Updates.Callback() {
             public void done(Updates.Info n) {
                 prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).apply();
+                if (!alive()) return;
                 if (n != null) {
                     showUpdate(n);
                     // 앱을 켰을 때 찾은 새 버전은 한 번 묻는다. '나중에'를 누르면 위쪽 카드로만 남는다
@@ -1929,7 +1961,7 @@ public class MainActivity extends Activity {
                     if (updView != null) updView.setText("새 버전 " + n.version + " 설치 창을 여는 중…");
                     // 30초 안에 아무 답이 없으면 멈춰 있지 말고 알려준다 (5.5.0 에서는 '내려받는 중'에 멈춰 있었다)
                     ui.postDelayed(new Runnable(){ public void run(){
-                        if (!updWaiting) return;
+                        if (!updWaiting || !alive()) return;
                         updWaiting = false;
                         showUpdate(n);
                         new android.app.AlertDialog.Builder(MainActivity.this)

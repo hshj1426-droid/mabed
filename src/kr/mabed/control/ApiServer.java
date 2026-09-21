@@ -87,7 +87,18 @@ public class ApiServer {
         return m;
     }
 
+    /** 침대 통신 스레드가 값을 넣는 순간과 겹치면 목록 읽기가 실패한다 — 몇 번 다시 시도한다 */
     private String state() {
+        for (int tries = 0; tries < 5; tries++) {
+            try { return stateOnce(); }
+            catch (ConcurrentModificationException retry) {
+                try { Thread.sleep(5); } catch (InterruptedException ignored) {}
+            }
+        }
+        return "{\"ok\":false}";
+    }
+
+    private String stateOnce() {
         try {
             JSONObject o = new JSONObject();
             o.put("phone", host.phoneName());
@@ -113,6 +124,7 @@ public class ApiServer {
             }
             o.put("beds", arr);
             return o.toString();
+        } catch (ConcurrentModificationException e) { throw e;          // 위에서 다시 시도
         } catch (Exception e) { return "{\"ok\":false}"; }
     }
 
