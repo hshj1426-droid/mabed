@@ -45,8 +45,8 @@ src/kr/mabed/control/
   Beds.java          등록 침대 목록 (prefs "beds" JSON)
   Net.java           와이파이 주소, 침대 AP 통신, isLan()
   Updates.java       깃허브 릴리스로 새 버전 확인 (REPO = hshj1426-droid/mabed)
-  Updater.java       새 버전 내려받아 설치 + 자동 업데이트 (서비스가 30분마다 autoTick)
-  InstallReceiver.java 설치 결과 받기 — 확인이 필요하면 창 또는 알림
+  Updater.java       새 버전 내려받아 PackageInstaller 로 설치 (배경 자동 확인 없음 — 앱을 켤 때 확인하고 묻는다)
+  InstallReceiver.java 설치 결과 받기 — 확인 창은 리시버가 띄우지 않고 화면(handleInstall)에 넘긴다 (안드로이드 14+ 가 막음)
   Ui.java            색·버튼·카드·배율
   BedView.java       침대 옆모습 그림 (mini 모드는 자세 버튼 아이콘)
   Slider.java        직접 그린 슬라이더
@@ -80,7 +80,7 @@ unzip -p build/mabed-X.apk classes.dex | strings | grep kr/mabed/control   # 새
 ## 배포
 
 - 사용자에게 APK를 직접 주거나,
-- 깃허브에서 **릴리스를 발행**하면(태그 `v5.4.0` 형식) Actions가 APK를 만들어 그 릴리스에 붙인다. 앱은 12시간마다 최신 릴리스를 확인해 알린다.
+- 깃허브에서 **릴리스를 발행**하면(태그 `v5.4.0` 형식) Actions가 APK를 만들어 그 릴리스에 붙인다. 앱은 켤 때(1시간 간격) 최신 릴리스를 확인해 설치할지 묻는다. 설정 → 새 버전 확인하고 설치.
 - 금고(Secrets)에 `KEYSTORE_B64`(키 파일을 base64), `KEYSTORE_PASS`가 있어야 한다.
 
 ## 침대 핀 요약
