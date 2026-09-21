@@ -50,6 +50,7 @@ public class MainActivity extends Activity {
     private View updCard;
     private Updates.Info pending;
     private boolean installAfterPerm = false;   // 설치 허용 화면에 다녀오는 중
+    private String askedVer = "";               // 이번에 이미 물어본 새 버전
     private LinearLayout tabRow;
     private final Map<String, Slider> bars = new LinkedHashMap<>();
     private final List<Object[]> poses = new ArrayList<>();   // {BedView 아이콘, 숫자 글자, 상체값, 다리값}
@@ -60,7 +61,14 @@ public class MainActivity extends Activity {
         Tgt(int f, int t, long a) { from = f; to = t; at = a; }
     }
     private final Map<String, Tgt> targets = new LinkedHashMap<>();
+    private String targetsToken = "";       // targets 가 어느 침대의 것인지
     private String dragPin = null;          // 지금 손가락으로 끌고 있는 슬라이더
+    private String dragToken = "";          // 끌기 시작할 때 고른 침대
+    /** 명령은 한 줄로 차례대로 보낸다 — 빨리 연달아 눌러도 순서가 뒤바뀌지 않게 */
+    private final java.util.concurrent.ExecutorService sendQ =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.atomic.AtomicBoolean peerBusy =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /** 무드등·스피커처럼 침대가 값을 잘 안 알려주는 핀은 마지막으로 보낸 값을 기억해둔다 */
     private final Map<String, Integer> sentVal = new HashMap<>();
@@ -132,13 +140,18 @@ public class MainActivity extends Activity {
         super.onResume();
         App.uiVisible = true;
         startTicking();
+        // 뒤에 있는 동안 설치 확인이 필요해졌다 (알림이 막혀 있어도 앱을 열면 이어서)
+        Intent confirm = App.takeConfirm();
+        if (confirm != null) try { startActivity(confirm); } catch (Throwable ignored) {}
         // '이 출처 허용'을 켜고 돌아왔으면 하던 설치를 이어서 한다
         if (installAfterPerm && pending != null && Updater.canInstall(this)) {
             installAfterPerm = false;
             startUpdate(pending);
         }
+        // 새 버전 확인은 앱을 켤 때만 (배경에서 주기적으로 확인하지 않는다 — 배터리).
+        // 뒤로 보냈다가 다시 연 것도 '켠 것'으로 치되, 1시간 안에 다시 묻지는 않는다.
         long last = prefs.getLong("updCheckedAt", 0);
-        if (System.currentTimeMillis() - last > 12L * 60 * 60 * 1000) checkUpdate(false);
+        if (System.currentTimeMillis() - last > 60L * 60 * 1000) checkUpdate(false);
         // 배터리 제한을 푼 뒤 돌아온 경우 설정 화면의 그 줄을 치운다
         if (screen == SCR_SETTINGS) renderSettings();
     }
@@ -388,9 +401,12 @@ public class MainActivity extends Activity {
                         13, u.ok, false), 13));
                     box.addView(u.btn("접속해 있는 침대 바로 추가", u.ok, 0xFFFFFFFF, 0, 15, 16,
                         new Runnable(){ public void run(){
+                            // 누르는 순간 다시 찾는다 — 그 사이 끊기고 다른 침대가 붙었을 수 있다
+                            String now = orphanToken();
+                            if (now == null) { toast("접속해 있던 침대가 끊겼습니다. 잠시 뒤 다시 시도해주세요"); wizShownOrphan = false; renderStep(); return; }
                             String n = wizNameIn.getText().toString().trim();
                             wizName = n.isEmpty() ? "내 침대" : n;
-                            wizToken = orphan;
+                            wizToken = now;
                             wizFinish();
                         }}));
                     box.addView(spacer(10));
@@ -1020,12 +1036,15 @@ public class MainActivity extends Activity {
         sb.setListener(new Slider.Listener() {
             public void onSlide(int v, boolean done) {
                 if (!done) {
-                    if (dragPin == null) askNow();
+                    if (dragPin == null) { askNow(); dragToken = curToken(); }
                     dragPin = pin;
                     vl.setText("→ " + fmt(pin, v));      // 끄는 동안엔 놓으면 갈 값을 보여준다
                     vl.setTextColor(u.accent);
                 } else {
+                    boolean same = dragPin != null && curToken().equals(dragToken);
                     dragPin = null;
+                    // 끄는 사이에 고른 침대가 바뀌었으면(이웃 침대가 사라지는 등) 보내지 않는다
+                    if (!same) { toast("침대가 바뀌어서 보내지 않았습니다"); refresh(); return; }
                     if (sendPin(pin, String.valueOf(v))) setTarget(pin, v);
                     refresh();
                 }
@@ -1047,6 +1066,7 @@ public class MainActivity extends Activity {
 
     /** −/+ 한 칸. 연달아 누르면 누른 만큼 쌓인다 */
     private void step(String pin, int max, int delta) {
+        ownTargets();
         Tgt t = targets.get(pin);
         int base = t != null ? t.to : pinValue("V" + pin, -1);
         // 예전엔 값을 모를 때 0에서 시작해서, + 를 누르면 침대가 거의 끝까지 내려가 버렸다
@@ -1060,15 +1080,24 @@ public class MainActivity extends Activity {
 
     /** 목표를 기록한다. 이미 가는 중이면 출발점은 처음 것을 유지한다 */
     private void setTarget(String pin, int to) {
+        ownTargets();
+        targetsToken = curToken();
         Tgt old = targets.get(pin);
         int from = old != null ? old.from : pinValue("V" + pin, -1);
         targets.put(pin, new Tgt(from, to, System.currentTimeMillis()));
+    }
+
+    /** 목표값은 그 목표를 보낸 침대의 것 — 고른 침대가 바뀌었으면 버린다
+     *  (다른 침대의 목표를 물려받아 + 한 번에 크게 움직이는 일이 없게) */
+    private void ownTargets() {
+        if (!targets.isEmpty() && !curToken().equals(targetsToken)) targets.clear();
     }
 
     /** 도착했거나 너무 오래된 목표를 지운다.
      *  예전엔 목표와 2도 차이만 나도 바로 지워서, + 를 여러 번 눌러도 1도씩만 움직이고
      *  "몇 도 → 몇 도" 표시도 금방 사라졌다. 이제는 보낸 뒤에 새로 받은 값으로만 판단한다. */
     private void settleTargets() {
+        ownTargets();
         long now = System.currentTimeMillis();
         for (Iterator<Map.Entry<String, Tgt>> it = targets.entrySet().iterator(); it.hasNext(); ) {
             Map.Entry<String, Tgt> e = it.next();
@@ -1435,12 +1464,6 @@ public class MainActivity extends Activity {
         LinearLayout g4 = group();
         g4.addView(linkRow("새 버전 확인하고 설치", "지금 " + Updates.installed(this),
                 new Runnable(){ public void run(){ checkUpdate(true); }}));
-        g4.addView(u.hair());
-        final boolean auto = Updater.autoOn(prefs);
-        g4.addView(linkRow("자동 업데이트", auto ? "켜짐" : "꺼짐", new Runnable(){ public void run(){
-            prefs.edit().putBoolean("autoUpd", !auto).apply();
-            toast(auto ? "자동 업데이트를 껐습니다" : "자동 업데이트를 켰습니다");
-            renderSettings(); }}));
         if (!Updater.canInstall(this)) {
             g4.addView(u.hair());
             g4.addView(linkRow("앱 설치 허용 (처음 한 번)", "필요", new Runnable(){ public void run(){
@@ -1449,10 +1472,8 @@ public class MainActivity extends Activity {
         g4.addView(u.hair());
         g4.addView(linkRow("연결 기록 보기", null, new Runnable(){ public void run(){ showLog(); }}));
         setBox.addView(g4);
-        setBox.addView(u.note(auto
-                ? "자동 업데이트: 6시간마다 새 버전을 확인하고, 30분 넘게 침대를 안 쓸 때 설치합니다. "
-                  + "처음 한 번은 설치 확인을 눌러야 하고, 그다음부터는 알아서 설치됩니다. 설치하는 몇 초 동안은 침대 연결이 끊겼다 다시 붙습니다."
-                : "자동 업데이트가 꺼져 있습니다. 새 버전은 위 '새 버전 확인하고 설치'로 설치하세요."));
+        setBox.addView(u.note("앱을 켤 때 새 버전이 있는지 확인하고, 있으면 설치할지 물어봅니다. "
+                + "배경에서 따로 확인하지 않아서 배터리를 쓰지 않습니다."));
         setBox.addView(u.note("문제가 생기면 연결 기록 화면을 캡처해서 보내주세요."));
     }
 
@@ -1504,10 +1525,13 @@ public class MainActivity extends Activity {
     private final Runnable peerPoll = new Runnable() {
         public void run() {
             if (!ticking) return;
-            bg(new Runnable(){ public void run(){
-                lan.refresh();
-                final List<LanPeers.RemoteBed> rb = lan.remoteBeds();
-                post(new Runnable(){ public void run(){ applyRemotes(rb); }});
+            // 앞의 갱신이 아직 안 끝났으면 건너뛴다 (늦게 끝난 옛 응답이 새 목록을 덮지 않게)
+            if (peerBusy.compareAndSet(false, true)) bg(new Runnable(){ public void run(){
+                try {
+                    lan.refresh();
+                    final List<LanPeers.RemoteBed> rb = lan.remoteBeds();
+                    post(new Runnable(){ public void run(){ applyRemotes(rb); }});
+                } finally { peerBusy.set(false); }
             }});
             if (ticking) ui.postDelayed(this, 3000);
         } };
@@ -1529,7 +1553,11 @@ public class MainActivity extends Activity {
             int found = -1;
             for (int i = 0; i < remotes.size(); i++) if (remotes.get(i).token.equals(selTok)) found = i;
             if (found >= 0) sel = found;
-            else { selRemote = false; sel = 0; targets.clear(); }
+            else {
+                // 보던 이웃 침대가 사라졌다 — 끌던 것·목표를 모두 버리고, 설정 화면도 새 침대로 다시 그린다
+                selRemote = false; sel = 0; targets.clear(); dragPin = null;
+                if (screen == SCR_SETTINGS) renderSettings();
+            }
         }
         fixSel();
         boolean changed = !sig.toString().equals(remoteSig);
@@ -1574,6 +1602,7 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        sendQ.shutdown();   // 이미 넣은 명령은 마저 보낸다
         ui.removeCallbacksAndMessages(null);
         App.setCallback(null);
         super.onDestroy();
@@ -1761,15 +1790,14 @@ public class MainActivity extends Activity {
     private boolean sendPin(final String pin, final String value) {
         final LanPeers.RemoteBed r = curRemote();
         final String k = curToken() + "|" + pin;
-        App.lastCmdAt = System.currentTimeMillis();     // 쓰는 중에는 자동 업데이트를 미룬다
         if (r != null) {
             if (!r.online) { toast("그 침대가 지금 꺼져 있습니다"); return false; }
             rememberSent(k, value);
             if (pin.equals("11") || pin.equals("13") || pin.equals("14")) askBurst();
-            bg(new Runnable(){ public void run(){
-                final boolean ok = lan.send(r.peerIp, r.token, pin, value);
-                if (!ok) post(new Runnable(){ public void run(){
-                    toast("명령이 전달되지 않았습니다. " + (r.phone.isEmpty() ? "주인 폰" : r.phone) + " 이 켜져 있는지 확인해주세요"); }});
+            sendQ.execute(new Runnable(){ public void run(){
+                if (!lan.send(r.peerIp, r.token, pin, value))
+                    sendFailed(r.token, pin, "명령이 전달되지 않았습니다. "
+                            + (r.phone.isEmpty() ? "주인 폰" : r.phone) + " 이 켜져 있는지 확인해주세요");
             }});
             return true;
         }
@@ -1778,8 +1806,20 @@ public class MainActivity extends Activity {
         rememberSent(k, value);
         if (pin.equals("11") || pin.equals("13") || pin.equals("14")
                 || pin.equals(prefs.getString("stopPin","41"))) askBurst();
-        bg(new Runnable(){ public void run(){ App.server().write(d, pin, value); }});
+        sendQ.execute(new Runnable(){ public void run(){
+            if (!App.server().write(d, pin, value))
+                sendFailed(d.token, pin, "명령이 전달되지 않았습니다. 침대 연결이 끊겼습니다");
+        }});
         return true;
+    }
+
+    /** 보내기 실패 — 그 목표는 없던 일로 한다 (다음 + 가 안 간 값을 기준으로 계산하지 않게) */
+    private void sendFailed(final String token, final String pin, final String msg) {
+        post(new Runnable(){ public void run(){
+            if (token.equals(targetsToken)) targets.remove(pin);
+            toast(msg);
+            refresh();
+        }});
     }
 
     private void rememberSent(String k, String value) {
@@ -1822,7 +1862,8 @@ public class MainActivity extends Activity {
                 prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).apply();
                 if (n != null) {
                     showUpdate(n);
-                    if (manual) askInstall(n);
+                    // 앱을 켰을 때 찾은 새 버전은 한 번 묻는다. '나중에'를 누르면 위쪽 카드로만 남는다
+                    if (manual || !n.version.equals(askedVer)) { askedVer = n.version; askInstall(n); }
                 }
                 else if (manual) toast("지금이 최신 버전입니다 (" + Updates.installed(MainActivity.this) + ")");
             } });
@@ -1871,6 +1912,8 @@ public class MainActivity extends Activity {
     }
 
     private void openInstallPerm() {
+        // 허용 화면에 가 있는 사이 앱이 정리돼도, 다시 열면 바로 새 버전을 확인하게
+        prefs.edit().putLong("updCheckedAt", 0).apply();
         try { startActivity(Updater.permIntent(this)); }
         catch (Throwable t) { installAfterPerm = false; toast("이 폰에서는 설정 화면을 열 수 없습니다"); }
     }

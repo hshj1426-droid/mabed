@@ -18,10 +18,14 @@ public class InstallReceiver extends BroadcastReceiver {
                 Intent confirm = i.getParcelableExtra(Intent.EXTRA_INTENT);
                 if (confirm == null) { Updater.busy = false; return; }
                 confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                boolean shown = false;
                 if (App.uiVisible) {
                     // 앱을 보고 있으면 바로 안드로이드의 '설치' 확인 창을 띄운다
-                    c.startActivity(confirm);
-                } else {
+                    try { c.startActivity(confirm); shown = true; } catch (Throwable ignored) {}
+                }
+                if (!shown) {
+                    // 알림 권한이 꺼져 있을 수도 있다 — 앱을 다시 열면 그때 창을 띄운다
+                    App.keepConfirm(confirm);
                     // 뒤에서는 창을 띄울 수 없다 — 알림을 누르면 확인 창이 뜬다
                     int f = PendingIntent.FLAG_UPDATE_CURRENT
                             | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);

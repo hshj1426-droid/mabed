@@ -15,16 +15,8 @@ public class ServerService extends Service {
     private PowerManager.WakeLock lock;
     private WifiManager.WifiLock wifi;
 
-    // 30분마다 자동 업데이트 조건을 본다 (실제 확인은 6시간마다, 조작 없을 때만)
-    private final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
-    private final Runnable updTick = new Runnable() { public void run() {
-        try { Updater.autoTick(ServerService.this); } catch (Throwable ignored) {}
-        h.postDelayed(this, 30L * 60 * 1000);
-    }};
-
     @Override public void onCreate() {
         super.onCreate();
-        h.postDelayed(updTick, 2L * 60 * 1000);   // 켜진 직후는 피하고 2분 뒤 첫 확인
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(
                     CHANNEL, "마베드 서버", NotificationManager.IMPORTANCE_LOW);
@@ -53,7 +45,8 @@ public class ServerService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        Intent open = new Intent(this, MainActivity.class);
+        Intent open = new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);   // 화면이 겹쳐 뜨지 않게
         int pf = Build.VERSION.SDK_INT >= 23
                 ? PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
                 : PendingIntent.FLAG_UPDATE_CURRENT;
@@ -95,7 +88,6 @@ public class ServerService extends Service {
     }
 
     @Override public void onDestroy() {
-        h.removeCallbacks(updTick);
         App.server().stop();
         if (lock != null && lock.isHeld()) lock.release();
         try { if (wifi != null && wifi.isHeld()) wifi.release(); } catch (Throwable ignored) {}

@@ -47,6 +47,8 @@ public class ApiServer {
             }
         } catch (Exception e) {
             if (running) App.addLog("오류", "이웃 창구 실패 · " + e.getMessage());
+            running = false;   // 다음 startNet 때 다시 열 수 있게
+            try { if (server != null) server.close(); } catch (Exception ignored) {}
         }
     }
 
@@ -121,7 +123,7 @@ public class ApiServer {
         if (d == null) return "{\"ok\":false,\"msg\":\"그 침대가 접속해 있지 않습니다\"}";
         boolean ok;
         if ("read".equals(val)) ok = App.server().read(d, pin);
-        else { ok = App.server().write(d, pin, val == null ? "1" : val); App.lastCmdAt = System.currentTimeMillis(); }
+        else ok = App.server().write(d, pin, val == null ? "1" : val);
         return "{\"ok\":" + ok + "}";
     }
 

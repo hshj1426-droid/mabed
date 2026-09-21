@@ -21,9 +21,12 @@ public class App {
     /** 화면이 보이는 중인가 (설치 확인 창을 바로 띄울지, 알림으로 부탁할지) */
     public static volatile boolean uiVisible = false;
 
-    /** 마지막으로 침대에 명령을 보낸 시각 — 쓰는 중에는 자동 업데이트를 미룬다 */
-    public static volatile long lastCmdAt = 0;
-
+    /** 뒤에 있을 때 도착한 '설치 확인' 창 — 알림이 막혀 있어도 앱을 열면 이어서 띄운다 */
+    private static android.content.Intent pendingConfirm;
+    static synchronized void keepConfirm(android.content.Intent i) { pendingConfirm = i; }
+    static synchronized android.content.Intent takeConfirm() {
+        android.content.Intent i = pendingConfirm; pendingConfirm = null; return i;
+    }
     public static synchronized BedServer server() {
         if (SERVER == null) {
             SERVER = new BedServer(new BedServer.Listener() {
@@ -69,8 +72,8 @@ public class App {
                     return hit;
                 }
             });
-            API.start();
         }
+        API.start();   // 이미 돌고 있으면 아무것도 안 한다. 포트 열기에 실패했었다면 다시 시도한다
         lan().start(app, phoneName(app), phoneId(app));
     }
 

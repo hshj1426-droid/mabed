@@ -28,7 +28,7 @@ public class LanPeers {
 
     private final Map<String, Peer> peers = new LinkedHashMap<>();
     private volatile boolean running;
-    private String myName = "폰", myId = "";
+    private volatile String myName = "폰", myId = "";   // 화면에서 바꾸고 알림 스레드가 읽는다
     private WifiManager.MulticastLock mcast;
 
     public void start(Context ctx, String name, String id) {
