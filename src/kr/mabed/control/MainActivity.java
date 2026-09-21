@@ -146,6 +146,7 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         App.uiVisible = true;
+        lan.setListening(true);     // 화면을 볼 때만 이웃 폰 신호를 받는다 (배터리)
         startTicking();
         // 뒤에 있는 동안 설치 확인이 필요해졌다 (알림이 막혀 있어도 앱을 열면 이어서)
         handleInstall();
@@ -165,6 +166,7 @@ public class MainActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         App.uiVisible = false;
+        lan.setListening(false);
         stopTicking();   // 서버와 서비스는 계속 돌고, 화면 갱신만 멈춘다
     }
 
@@ -1464,8 +1466,18 @@ public class MainActivity extends Activity {
             g3.addView(u.hair());
             g3.addView(linkRow("배터리 제한 풀기", "권장", new Runnable(){ public void run(){ askBattery(); }}));
         }
+        g3.addView(u.hair());
+        final boolean awake = ServerService.keepAwake(this);
+        g3.addView(linkRow("연결 유지 강화", awake ? "켜짐 · 배터리 더 씀" : "꺼짐 · 배터리 절약",
+                new Runnable(){ public void run(){
+                    prefs.edit().putBoolean("keepAwake", !awake).apply();
+                    ServerService.locksChanged();
+                    toast(awake ? "껐습니다. 배터리를 아낍니다" : "켰습니다. 폰이 잠들지 않고 침대를 기다립니다");
+                    renderSettings(); }}));
         setBox.addView(g3);
         setBox.addView(u.note("다른 폰이 넘기기 목록에서 이 폰을 못 찾으면, 위 주소를 직접 넣으면 됩니다."));
+        setBox.addView(u.note("연결 유지 강화: 평소엔 꺼 두세요. 폰 화면이 꺼진 뒤 한참 지나서 침대가 반응하지 않거나 "
+                + "'기다리는 중'으로 바뀌면 그때 켜세요. 켜면 폰이 잠들지 않아 배터리를 더 씁니다."));
 
         setBox.addView(u.head("앱"));
         LinearLayout g4 = group();

@@ -14,7 +14,8 @@ public class LanPeers {
 
     public static class Peer {
         public String ip, phone = "";
-        public long seen;
+        public long seen;          // 마지막으로 소식을 들은 때 (알림 신호 또는 상태 응답)
+        int fails;                 // 연달아 상태 응답이 없었던 횟수
         public final List<RemoteBed> beds = new ArrayList<>();
     }
 
@@ -30,25 +31,39 @@ public class LanPeers {
     private volatile boolean running;
     private volatile String myName = "폰", myId = "";   // 화면에서 바꾸고 알림 스레드가 읽는다
     private WifiManager.MulticastLock mcast;
+    private Context app;
+    /** 화면을 보고 있는가 — 그때만 이웃 신호를 받고, 알림 신호도 자주 보낸다 */
+    private volatile boolean listening = false;
 
     public void start(Context ctx, String name, String id) {
         myName = name; myId = id;
+        if (ctx != null) app = ctx.getApplicationContext();
         if (running) return;
         running = true;
-        // 이게 없으면 기종에 따라 브로드캐스트가 아예 안 들어온다
-        try {
-            if (ctx != null) {
-                WifiManager wm = (WifiManager) ctx.getApplicationContext()
-                        .getSystemService(Context.WIFI_SERVICE);
-                if (wm != null) {
-                    mcast = wm.createMulticastLock("mabed:peers");
-                    mcast.setReferenceCounted(false);
-                    mcast.acquire();
-                }
-            }
-        } catch (Throwable ignored) {}
         new Thread(new Runnable(){ public void run(){ listen(); }}).start();
         new Thread(new Runnable(){ public void run(){ beacon(); }}).start();
+    }
+
+    /** 화면이 보일 때 true, 안 보일 때 false.
+     *  MulticastLock 이 없으면 기종에 따라 브로드캐스트가 안 들어온다. 하지만 이걸 늘 잡고 있으면
+     *  집 와이파이의 모든 방송 패킷에 폰이 깨어나 배터리를 쓴다 → 화면을 볼 때만 잡는다.
+     *  (다른 폰을 찾는 건 화면을 보는 쪽이 할 일이다. 뒤에 있는 폰은 알림 신호만 보낸다) */
+    public synchronized void setListening(boolean on) {
+        listening = on;
+        try {
+            if (on) {
+                if (mcast == null && app != null) {
+                    WifiManager wm = (WifiManager) app.getSystemService(Context.WIFI_SERVICE);
+                    if (wm != null) {
+                        mcast = wm.createMulticastLock("mabed:peers");
+                        mcast.setReferenceCounted(false);
+                    }
+                }
+                if (mcast != null && !mcast.isHeld()) mcast.acquire();
+            } else if (mcast != null && mcast.isHeld()) {
+                mcast.release();
+            }
+        } catch (Throwable ignored) {}
     }
 
     /** 이웃에게 알릴 이 폰 이름을 바꾼다 */
@@ -64,7 +79,7 @@ public class LanPeers {
         List<Peer> out = new ArrayList<>();
         long now = System.currentTimeMillis();
         synchronized (peers) {
-            for (Peer p : peers.values()) if (now - p.seen < 20000) out.add(p);
+            for (Peer p : peers.values()) if (now - p.seen < 30000) out.add(p);
         }
         return out;
     }
@@ -85,7 +100,8 @@ public class LanPeers {
                         InetAddress.getByName("255.255.255.255"), UDP_PORT));
                 s.close();
             } catch (Exception ignored) {}
-            try { Thread.sleep(4000); } catch (Exception ignored) {}
+            // 화면을 볼 때 4초, 뒤에 있을 때 10초 (다른 폰은 한 번 찾은 뒤엔 직접 물어보므로 자주 알릴 필요가 없다)
+            try { Thread.sleep(listening ? 4000 : 10000); } catch (Exception ignored) {}
         }
     }
 
@@ -118,7 +134,19 @@ public class LanPeers {
 
     /** 이웃 폰들의 침대 상태를 받아온다 */
     public void refresh() {
-        for (final Peer p : peers()) {
+        // 한 번 찾은 폰은 알림 신호가 뜸해도(그 폰이 잠들어 있어도) 10분 동안은 직접 물어본다.
+        // 직접 묻는 연결이 들어오면 그 폰이 깨어나 답한다. 연달아 3번 답이 없으면 신호가 다시 올 때까지 쉰다.
+        List<Peer> known = new ArrayList<>();
+        long now0 = System.currentTimeMillis();
+        synchronized (peers) {
+            for (Iterator<Peer> it = peers.values().iterator(); it.hasNext(); ) {
+                Peer p = it.next();
+                if (now0 - p.seen > 10 * 60 * 1000) { it.remove(); continue; }
+                if (p.fails >= 3 && now0 - p.seen > 30000) continue;
+                known.add(p);
+            }
+        }
+        for (final Peer p : known) {
             try {
                 String json = http("http://" + p.ip + ":" + ApiServer.PORT + "/state", 2500);
                 JSONObject o = new JSONObject(json);
@@ -146,7 +174,10 @@ public class LanPeers {
                     fresh.add(rb);
                 }
                 synchronized (p.beds) { p.beds.clear(); p.beds.addAll(fresh); }
-            } catch (Exception ignored) {}
+                synchronized (peers) { p.seen = System.currentTimeMillis(); p.fails = 0; }
+            } catch (Exception e) {
+                synchronized (peers) { p.fails++; }
+            }
         }
     }
 

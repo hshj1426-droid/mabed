@@ -24,22 +24,47 @@ public class ServerService extends Service {
             ((NotificationManager) getSystemService(NOTIFICATION_SERVICE))
                     .createNotificationChannel(ch);
         }
-        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mabed:server");
-        lock.setReferenceCounted(false);
-        lock.acquire();
+        inst = this;
+        applyLocks();
+    }
 
-        // 화면이 꺼져도 와이파이가 잠들지 않게 붙잡아 둔다
+    /** '연결 유지 강화'(설정)를 켰을 때만 폰을 깨워두고 와이파이 절전을 막는다.
+     *  5.6.2 까지는 늘 잡고 있어서 배터리를 계속 썼다 (사용자 요청으로 기본 끔).
+     *  끈 상태에서도 앞쪽 서비스(알림줄)라서 네트워크는 살아 있고, 침대가 보내는 신호가 오면 폰이 깨어난다.
+     *  화면이 꺼진 뒤 침대가 반응하지 않으면 이걸 켜면 예전처럼 동작한다. */
+    public static boolean keepAwake(Context c) { return App.prefs(c).getBoolean("keepAwake", false); }
+
+    /** 설정을 바꾼 뒤 부른다 */
+    static void locksChanged() {
+        ServerService s = inst;
+        if (s != null) s.applyLocks();
+    }
+
+    private synchronized void applyLocks() {
+        boolean on = keepAwake(this);
         try {
-            WifiManager wm = (WifiManager) getApplicationContext()
-                    .getSystemService(Context.WIFI_SERVICE);
-            if (wm != null) {
-                int mode = Build.VERSION.SDK_INT >= 29
-                        ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                        : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
-                wifi = wm.createWifiLock(mode, "mabed:wifi");
-                wifi.setReferenceCounted(false);
-                wifi.acquire();
+            if (on) {
+                if (lock == null) {
+                    PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                    lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mabed:server");
+                    lock.setReferenceCounted(false);
+                }
+                if (!lock.isHeld()) lock.acquire();
+                if (wifi == null) {
+                    WifiManager wm = (WifiManager) getApplicationContext()
+                            .getSystemService(Context.WIFI_SERVICE);
+                    if (wm != null) {
+                        int mode = Build.VERSION.SDK_INT >= 29
+                                ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                                : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+                        wifi = wm.createWifiLock(mode, "mabed:wifi");
+                        wifi.setReferenceCounted(false);
+                    }
+                }
+                if (wifi != null && !wifi.isHeld()) wifi.acquire();
+            } else {
+                if (lock != null && lock.isHeld()) lock.release();
+                if (wifi != null && wifi.isHeld()) wifi.release();
             }
         } catch (Throwable ignored) {}
     }
@@ -118,7 +143,7 @@ public class ServerService extends Service {
     @Override public void onDestroy() {
         inst = null;
         App.server().stop();
-        if (lock != null && lock.isHeld()) lock.release();
+        try { if (lock != null && lock.isHeld()) lock.release(); } catch (Throwable ignored) {}
         try { if (wifi != null && wifi.isHeld()) wifi.release(); } catch (Throwable ignored) {}
         super.onDestroy();
     }
