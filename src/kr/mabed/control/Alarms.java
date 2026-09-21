@@ -15,16 +15,48 @@ import java.util.*;
  *  시험 전(또는 반응 없음)에는 절대로 알람을 켜서 보내지 않는다 — 엉뚱한 시각에 침대가 움직이지 않게. */
 public class Alarms {
 
-    public static final int COUNT = 3;
-    public static final int[] DURATIONS = { 60, 180, 300, 600 };     // 올라가는 데 걸리는 시간 (시작~종료)
+    /** 반복 알람 개수 — 침대의 알람 1·2. (알람 3 자리는 빠른 알람이 쓴다, 5.10.2) */
+    public static final int COUNT = 2;
+    /** 침대 알람의 시작~종료 간격. 시험에서 동작이 확인된 1분으로 고정한다 — 침대는 시작 시각에 평소 속도로 올라갈 뿐,
+     *  '몇 분에 걸쳐'는 의미가 없어서 사용자 선택지에서 뺐다. (종료 때 무엇을 하는지는 아직 확인 전) */
+    public static final int WINDOW = 60;
     public static final String[] DAY_NAMES = { "월", "화", "수", "목", "금", "토", "일" };
 
     /** 알람 하나 */
     public static class A {
         public boolean on = false;
         public int start = 7 * 3600;      // 하루 중 몇 초 (한국 시각)
-        public int dur = 180;             // 시작~종료 초
         public int days = 0x7F;           // 비트: 월=1 … 일=64
+    }
+
+    // ── 빠른 알람 ("30분 뒤") — 침대의 알람 3 자리를 쓴다 ─────────────
+    // 침대 알람은 '매주 그 요일' 반복이라, 울린 뒤에 앱이 꺼야 한다.
+    // 울린 뒤 침대가 움직이며 다시 접속하면 push 가 그 자리를 끈다. (앱을 일주일 넘게 안 열면 한 번 더 울릴 수는 있다)
+
+    /** 울린 뒤 이만큼은 켜 둔다 — 그 시각 딱 맞춰 끄면 침대가 울리기 전에 꺼버릴 수 있다 */
+    static final long QUICK_KEEP = WINDOW * 1000L + 90000L;
+
+    /** 빠른 알람 시각(밀리초). 없거나, 울리고 2분 반이 지났으면 0 */
+    public static long quickAt(SharedPreferences p, String token) {
+        long at = p.getLong(k(token, "qaAt"), 0);
+        if (at != 0 && System.currentTimeMillis() > at + QUICK_KEEP) { p.edit().remove(k(token, "qaAt")).apply(); return 0; }
+        return at;
+    }
+
+    public static void setQuick(SharedPreferences p, String token, long atMs) {
+        if (atMs <= 0) p.edit().remove(k(token, "qaAt")).apply();
+        else p.edit().putLong(k(token, "qaAt"), atMs).apply();
+    }
+
+    /** 빠른 알람을 침대 알람 한 칸 모양으로 (그 시각 · 그 요일 하루만) */
+    static A quickAsAlarm(long atMs) {
+        Calendar c = Calendar.getInstance();
+        c.setTimeInMillis(atMs);
+        A a = new A();
+        a.on = true;
+        a.start = c.get(Calendar.HOUR_OF_DAY) * 3600 + c.get(Calendar.MINUTE) * 60 + c.get(Calendar.SECOND);
+        a.days = 1 << ((c.get(Calendar.DAY_OF_WEEK) + 5) % 7);     // 일=1…토=7 → 월=0…일=6
+        return a;
     }
 
     private static String k(String token, String n) { return "b_" + token + "_" + n; }
@@ -33,14 +65,13 @@ public class Alarms {
         A a = new A();
         a.on = p.getBoolean(k(token, "al" + i + "on"), false);
         a.start = p.getInt(k(token, "al" + i + "start"), a.start);
-        a.dur = p.getInt(k(token, "al" + i + "dur"), a.dur);
         a.days = p.getInt(k(token, "al" + i + "days"), a.days);
         return a;
     }
 
     public static void put(SharedPreferences p, String token, int i, A a) {
         p.edit().putBoolean(k(token, "al" + i + "on"), a.on).putInt(k(token, "al" + i + "start"), a.start)
-                .putInt(k(token, "al" + i + "dur"), a.dur).putInt(k(token, "al" + i + "days"), a.days).apply();
+                .putInt(k(token, "al" + i + "days"), a.days).apply();
     }
 
     /** 알람 때 상체 높이 (침대 값 0~80, 원래 앱 기본 50) */
@@ -88,9 +119,9 @@ public class Alarms {
         if (clock.equals("utc")) {
             int s = a.start - off, shift = 0;
             if (s < 0) { s += 86400; shift = -1; } else if (s >= 86400) { s -= 86400; shift = 1; }
-            return timeInput(s, (s + a.dur) % 86400, rotate(a.days, shift), "UTC", 0);
+            return timeInput(s, (s + WINDOW) % 86400, rotate(a.days, shift), "UTC", 0);
         }
-        return timeInput(a.start, (a.start + a.dur) % 86400, a.days, TimeZone.getDefault().getID(), off);
+        return timeInput(a.start, (a.start + WINDOW) % 86400, a.days, TimeZone.getDefault().getID(), off);
     }
 
     /** 시험 알람이 켜진 채 남았을 수 있다는 표시 (시험 끝에 연결이 끊겨 못 껐을 때) */
@@ -119,13 +150,33 @@ public class Alarms {
             s.write(d, String.valueOf(i), valueFor(a, clock));
             s.write(d, String.valueOf(4 + i), a.on ? "1" : "0");
         }
+        // 알람 3 자리 = 빠른 알람. 없거나 이미 지났으면 끈다 (울린 뒤 다시 접속할 때 여기서 꺼진다)
+        long qa = quickAt(p, d.token);
+        A q = qa != 0 ? quickAsAlarm(qa) : new A();
+        s.write(d, "3", valueFor(q, clock));
+        s.write(d, "7", qa != 0 ? "1" : "0");
         s.write(d, "12", String.valueOf(height(p, d.token)));
-        App.addLog("알람", "침대에 알람 설정을 보냈습니다");
+        App.addLog("알람", "침대에 알람 설정을 보냈습니다" + (qa != 0 ? " · 빠른 알람 " + hm(q.start) : ""));
     }
 
-    /** 사람이 읽는 한 줄: "07:00 · 3분 동안 · 월 화 수 목 금" */
+    /** 사람이 읽는 한 줄: "07:00 · 월 화 수 목 금" */
     public static String describe(A a) {
-        return hm(a.start) + " · " + (a.dur / 60) + "분 동안 · " + daysText(a.days);
+        return hm(a.start) + " · " + daysText(a.days);
+    }
+
+    /** "오후 3:25" */
+    public static String clockText(long atMs) {
+        return new java.text.SimpleDateFormat("a h:mm", Locale.KOREA).format(new Date(atMs));
+    }
+
+    /** 남은 시간 "1시간 12분 뒤" · "12분 뒤" · "1분 안에" */
+    public static String leftText(long atMs) {
+        long ms = atMs - System.currentTimeMillis();
+        if (ms <= 0) return "지금";
+        long m = (ms + 59999) / 60000;
+        if (m <= 1) return "1분 안에";
+        if (m < 60) return m + "분 뒤";
+        return (m / 60) + "시간" + (m % 60 == 0 ? "" : " " + (m % 60) + "분") + " 뒤";
     }
 
     public static String hm(int sec) {

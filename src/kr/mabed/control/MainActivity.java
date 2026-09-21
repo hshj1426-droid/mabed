@@ -1721,6 +1721,7 @@ public class MainActivity extends Activity {
         public void run() {
             if (!ticking) return;
             refresh();
+            tickQuick();
             ui.postDelayed(this, 800);
         } };
     private final Runnable poll = new Runnable() {
@@ -1993,6 +1994,8 @@ public class MainActivity extends Activity {
             g.addView(alarmRow(tok, i));
         }
         g.addView(u.hair());
+        g.addView(quickBlock(tok));
+        g.addView(u.hair());
         // 알람 때 상체 높이 (원래 앱의 '알람시 상체높이' 슬라이더)
         LinearLayout hb = u.col();
         hb.setPadding(u.dp(16), u.dp(12), u.dp(16), u.dp(6));
@@ -2016,7 +2019,112 @@ public class MainActivity extends Activity {
         g.addView(hb);
         alarmBox.addView(g);
         alarmBox.addView(u.note("알람은 침대가 스스로 실행합니다. 폰이 꺼져 있어도 됩니다. "
-                + "시작 시각이 되면 상체를 위 높이까지 올립니다."));
+                + "그 시각이 되면 상체를 위 높이까지 올립니다. 알람 1·2 는 매주 그 요일마다, 빠른 알람은 한 번만."));
+    }
+
+    // ── 빠른 알람 ("30분 뒤") — 침대의 알람 3 자리 ─────────────
+    private TextView quickLeft;          // "1시간 12분 뒤" — 1초마다 갱신
+    private String quickTok = null;
+
+    private View quickBlock(final String tok) {
+        LinearLayout qb = u.col();
+        qb.setPadding(u.dp(16), u.dp(12), u.dp(16), u.dp(10));
+        final long at = Alarms.quickAt(prefs, tok);
+        quickTok = tok;
+        if (at != 0) {
+            LinearLayout r = new LinearLayout(this);
+            r.setOrientation(LinearLayout.HORIZONTAL);
+            r.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout col = u.col();
+            col.addView(u.text("빠른 알람   " + Alarms.clockText(at), 16, u.fg, true));
+            quickLeft = u.text(Alarms.leftText(at) + " 올라갑니다", 12.5f, u.accent, true);
+            col.addView(quickLeft);
+            r.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+            TextView cancel = u.pill("취소", u.fg, u.bg, u.line);
+            cancel.setPadding(u.dp(16), u.dp(9), u.dp(16), u.dp(10));
+            cancel.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                Alarms.setQuick(prefs, tok, 0); renderAlarms(); pushAlarms(tok); toast("빠른 알람을 취소했습니다"); }});
+            r.addView(cancel, new LinearLayout.LayoutParams(-2, -2));
+            qb.addView(r);
+            return qb;
+        }
+        quickLeft = null;
+        qb.addView(u.text("빠른 알람 — 지금부터", 14, u.muted, true));
+        LinearLayout row = u.row(0);
+        row.setPadding(0, u.dp(8), 0, 0);
+        int[] mins = { 10, 30, 60, 120 };
+        String[] names = { "10분", "30분", "1시간", "2시간" };
+        for (int x = 0; x < mins.length; x++) {
+            final int m = mins[x];
+            Button b = u.btn(names[x], u.bg, u.fg, u.line, 13.5f, 9, new Runnable(){ public void run(){ setQuick(tok, m); }});
+            row.addView(b, u.w(1, 3));
+        }
+        qb.addView(row);
+        qb.addView(u.small("직접 정하기 (몇 시간 몇 분 뒤)", new Runnable(){ public void run(){ pickQuick(tok); }}));
+        return qb;
+    }
+
+    private void setQuick(String tok, int minutes) {
+        long at = System.currentTimeMillis() + minutes * 60000L;
+        Alarms.setQuick(prefs, tok, at);
+        renderAlarms(); pushAlarms(tok);
+        toast(Alarms.leftText(at) + " · " + Alarms.clockText(at) + " 에 올라갑니다");
+    }
+
+    /** 몇 시간 몇 분 뒤 — 고르는 동안 올라갈 시각을 보여준다 */
+    private void pickQuick(final String tok) {
+        LinearLayout box = u.col();
+        box.setPadding(u.dp(20), u.dp(8), u.dp(20), 0);
+        LinearLayout pr = new LinearLayout(this);
+        pr.setOrientation(LinearLayout.HORIZONTAL);
+        pr.setGravity(Gravity.CENTER);
+        final NumberPicker hp = new NumberPicker(this);
+        hp.setMinValue(0); hp.setMaxValue(23); hp.setValue(0);
+        final NumberPicker mp = new NumberPicker(this);
+        mp.setMinValue(0); mp.setMaxValue(59); mp.setValue(30);
+        pr.addView(hp); pr.addView(u.text("시간", 15, u.fg, true));
+        pr.addView(mp); pr.addView(u.text("분 뒤", 15, u.fg, true));
+        box.addView(pr);
+        final TextView when = u.text("", 15, u.accent, true);
+        when.setGravity(Gravity.CENTER);
+        when.setPadding(0, u.dp(10), 0, 0);
+        box.addView(when);
+        final Runnable upd = new Runnable(){ public void run(){
+            int m = hp.getValue() * 60 + mp.getValue();
+            when.setText(m < 1 ? "1분 이상으로 골라주세요"
+                    : "→ " + Alarms.clockText(System.currentTimeMillis() + m * 60000L) + " 에 올라갑니다");
+        }};
+        NumberPicker.OnValueChangeListener l = new NumberPicker.OnValueChangeListener() {
+            public void onValueChange(NumberPicker p, int o, int n) { upd.run(); } };
+        hp.setOnValueChangedListener(l); mp.setOnValueChangedListener(l);
+        upd.run();
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("빠른 알람")
+            .setView(box)
+            .setPositiveButton("맞추기", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    int m = hp.getValue() * 60 + mp.getValue();
+                    if (m < 1) { toast("1분 이상으로 골라주세요"); return; }
+                    setQuick(tok, m);
+                } })
+            .setNegativeButton("취소", null).show();
+    }
+
+    /** 1초마다 — 빠른 알람 남은 시간을 고치고, 시각이 지나면 칸을 되돌린다 */
+    private void tickQuick() {
+        if (quickTok == null || alarmBox == null) return;
+        Beds.Bed b = cur();
+        if (b == null || !b.token.equals(quickTok)) return;
+        if (quickLeft == null) return;
+        long at = Alarms.quickAt(prefs, quickTok);
+        if (at == 0) {
+            // 울리고 2분 반 지났다 — 침대의 알람 3 자리를 끈다 (안 끄면 다음 주 같은 시각에 또 울린다)
+            renderAlarms();
+            final BedServer.Dev d = App.server().byToken(quickTok);
+            if (d != null) sendQ.execute(new Runnable(){ public void run(){ Alarms.push(MainActivity.this, d); }});
+            return;
+        }
+        quickLeft.setText(Alarms.leftText(at) + " 올라갑니다");
     }
 
     private View alarmRow(final String tok, final int i) {
@@ -2028,7 +2136,7 @@ public class MainActivity extends Activity {
         row.setMinimumHeight(u.rawDp(56));
         LinearLayout col = u.col();
         col.addView(u.text("알람 " + i + "   " + Alarms.hm(a.start), 16, a.on ? u.fg : u.muted, true));
-        col.addView(u.text((a.dur / 60) + "분 동안 올림 · " + Alarms.daysText(a.days), 12.5f, u.muted, false));
+        col.addView(u.text(Alarms.daysText(a.days), 12.5f, u.muted, false));
         row.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
         TextView pill = u.pill(a.on ? "켜짐" : "꺼짐", a.on ? 0xFFFFFFFF : u.muted, a.on ? u.accent : u.bg, a.on ? 0 : u.line);
         pill.setPadding(u.dp(16), u.dp(9), u.dp(16), u.dp(10));
@@ -2049,7 +2157,7 @@ public class MainActivity extends Activity {
         return row;
     }
 
-    /** 알람 하나 고치기 — 시각, 올리는 시간, 요일 */
+    /** 알람 하나 고치기 — 시각, 요일 */
     private void editAlarm(final String tok, final int i) {
         final Alarms.A a = Alarms.get(prefs, tok, i);
         LinearLayout box = u.col();
@@ -2064,21 +2172,6 @@ public class MainActivity extends Activity {
             }, a.start / 3600, (a.start / 60) % 60, true).show();
         }});
         box.addView(timeBtn);
-
-        box.addView(u.text("몇 분에 걸쳐 올릴까요", 13, u.muted, true));
-        LinearLayout durRow = u.row(8);
-        final List<Button> durBtns = new ArrayList<>();
-        for (final int d : Alarms.DURATIONS) {
-            final Button bt = u.btn((d / 60) + "분", u.card, u.fg, u.line, 13, 8, null);
-            durBtns.add(bt);
-            bt.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
-                a.dur = d; paintChoice(durBtns, Arrays.asList(1, 3, 5, 10).indexOf(d / 60)); }});
-            durRow.addView(bt, u.w(1, 2));
-        }
-        int di = 0;
-        for (int x = 0; x < Alarms.DURATIONS.length; x++) if (Alarms.DURATIONS[x] == a.dur) di = x;
-        paintChoice(durBtns, di);
-        box.addView(durRow);
 
         box.addView(u.text("요일", 13, u.muted, true));
         LinearLayout dayRow = u.row(8);
