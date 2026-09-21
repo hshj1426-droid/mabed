@@ -99,7 +99,7 @@
 Gradle·AndroidX 없이 SDK 도구를 직접 부른다.
 
 ```
-./build.sh 5.10.0     # → build/mabed-5.10.0.apk
+./build.sh 5.10.1     # → build/mabed-5.10.1.apk
 ```
 
 - 필요: Android SDK(`ANDROID_HOME` 또는 `~/android-sdk`)의 build-tools 35.0.0 · platforms/android-35, JDK 17+

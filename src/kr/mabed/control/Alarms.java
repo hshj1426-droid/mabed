@@ -93,13 +93,27 @@ public class Alarms {
         return timeInput(a.start, (a.start + a.dur) % 86400, a.days, TimeZone.getDefault().getID(), off);
     }
 
+    /** 시험 알람이 켜진 채 남았을 수 있다는 표시 (시험 끝에 연결이 끊겨 못 껐을 때) */
+    public static void markDirty(SharedPreferences p, String token, boolean on) {
+        p.edit().putBoolean(k(token, "alDirty"), on).apply();
+    }
+
     /** 이 침대에 알람 설정을 모두 보낸다 (접속할 때 · 바꿀 때). 시험 전이면 아무것도 켜지 않는다 */
     public static void push(Context c, BedServer.Dev d) {
         if (d == null) return;
         SharedPreferences p = App.prefs(c);
-        String clock = clock(p, d.token);
-        if (!ready(p, d.token)) return;
         BedServer s = App.server();
+        String clock = clock(p, d.token);
+        if (!ready(p, d.token)) {
+            // 시계를 모른다 → 알람을 켜지 않는다. 다만 못 끈 시험 알람이 남아 있으면 끈다
+            if (p.getBoolean(k(d.token, "alDirty"), false)
+                    && s.write(d, "5", "0") && s.write(d, "6", "0") && s.write(d, "7", "0")) {
+                markDirty(p, d.token, false);
+                App.addLog("알람", "남아 있던 시험 알람을 껐습니다");
+            }
+            return;
+        }
+        markDirty(p, d.token, false);   // 아래에서 켜기/끄기를 모두 다시 쓴다
         for (int i = 1; i <= COUNT; i++) {
             A a = get(p, d.token, i);
             s.write(d, String.valueOf(i), valueFor(a, clock));

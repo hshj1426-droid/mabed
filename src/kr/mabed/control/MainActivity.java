@@ -2156,7 +2156,10 @@ public class MainActivity extends Activity {
             .setNegativeButton("취소", null).show();
     }
 
-    private void runAlarmTest(final String tok, final BedServer.Dev d) {
+    /** 이 침대는 움직이는 동안 연결이 끊겼다가 스스로 다시 붙는다(5.10.0 시험에서 확인).
+     *  그래서 시험은 연결 하나를 붙잡지 않고, 매번 인증키로 '지금 연결'을 찾는다.
+     *  보내다 실패한 명령은 다음 초에 새 연결로 다시 보내고, 다시 붙으면 시험 알람도 다시 넣는다. */
+    private void runAlarmTest(final String tok, BedServer.Dev first) {
         alarmTesting = true;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         final BedServer s = App.server();
@@ -2169,57 +2172,79 @@ public class MainActivity extends Activity {
         final long[] t0 = { 0 };          // 시험 알람을 넣은 시각 (0 = 아직 눕히는 중)
         final int[] base = { -1 };
         final long began = System.currentTimeMillis();
+        final long[] lastSeen = { began };
+        final boolean[] flatSent = { false };
+        final String[][] testVals = { null };             // 넣을 시험 알람 값 (다시 붙으면 또 넣는다)
+        final BedServer.Dev[] wroteTo = { null };         // 시험 알람을 넣은 연결
         App.addLog("알람", "시험 시작");
-        sendQ.execute(new Runnable(){ public void run(){ s.write(d, "11", "0"); }});
 
         final Runnable[] loop = new Runnable[1];
         dlg.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) { endAlarmTest(tok, d, null, dlg, loop[0]); }});
+            public void onClick(View v) { endAlarmTest(tok, null, dlg, loop[0]); }});
 
         loop[0] = new Runnable() { public void run() {
             if (!alarmTesting) return;
             long now = System.currentTimeMillis();
+            final BedServer.Dev d = s.byToken(tok);
+            if (d == null) {
+                // 움직이는 중이라 잠깐 끊겼을 수 있다 — 40초까지 기다린다
+                if (now - lastSeen[0] > 40000) { endAlarmTest(tok, "lost", dlg, this); return; }
+                dlg.setMessage((t0[0] == 0 ? "평평하게 눕히는 중…" : "기다리는 중…") + "\n(침대가 움직이며 잠깐 연결이 끊겼습니다. 곧 다시 붙습니다)");
+                ui.postDelayed(this, 1000);
+                return;
+            }
+            lastSeen[0] = now;
             final int v = pinOf(d, "V11");
-            long at = d.pinAt.containsKey("V11") ? d.pinAt.get("V11") : 0;
+            Long atL = d.pinAt.get("V11");
+            long at = atL == null ? 0 : atL;
             sendQ.execute(new Runnable(){ public void run(){ s.read(d, "11"); }});
 
-            if (App.server().byToken(tok) != d) { endAlarmTest(tok, d, "lost", dlg, this); return; }
+            if (!flatSent[0]) {
+                sendQ.execute(new Runnable(){ public void run(){ if (s.write(d, "11", "0")) flatSent[0] = true; }});
+            }
 
             if (t0[0] == 0) {
                 // 1단계: 평평하게 눕히기 (최대 90초)
                 if (v >= 0 && v <= 5 && at > began + 1000 || now - began > 90000) {
-                    if (v > 20) { endAlarmTest(tok, d, "notflat", dlg, this); return; }
+                    if (v > 20) { endAlarmTest(tok, "notflat", dlg, this); return; }
                     base[0] = Math.max(0, v);
                     final int L = Alarms.nowOfDay(), off = Alarms.tzOffset();
                     final String tz = java.util.TimeZone.getDefault().getID();
-                    final String a1 = Alarms.timeInput((L + 120) % 86400, (L + 180) % 86400, 0x7F, tz, off);
                     final int u2 = ((L - off + 240) % 86400 + 86400) % 86400;
-                    final String a2 = Alarms.timeInput(u2, (u2 + 60) % 86400, 0x7F, "UTC", 0);
-                    sendQ.execute(new Runnable(){ public void run(){
-                        s.write(d, "7", "0");
-                        s.write(d, "12", String.valueOf(TEST_HEIGHT));
-                        s.write(d, "1", a1);
-                        s.write(d, "2", a2);
-                        s.write(d, "5", "1");
-                        s.write(d, "6", "1");
-                    }});
+                    testVals[0] = new String[]{
+                        "7", "0",
+                        "12", String.valueOf(TEST_HEIGHT),
+                        "1", Alarms.timeInput((L + 120) % 86400, (L + 180) % 86400, 0x7F, tz, off),
+                        "2", Alarms.timeInput(u2, (u2 + 60) % 86400, 0x7F, "UTC", 0),
+                        "5", "1",
+                        "6", "1" };
                     t0[0] = System.currentTimeMillis();
-                    App.addLog("알람", "시험 알람을 넣었습니다 (①한국 시각 2분 뒤 · ②UTC 4분 뒤)");
+                    App.addLog("알람", "시험 알람 (①한국 시각 2분 뒤 · ②UTC 4분 뒤)");
                 } else dlg.setMessage("평평하게 눕히는 중…  지금 상체 " + fmt("11", v));
-            } else {
+            }
+            if (t0[0] != 0) {
+                // 시험 알람을 아직 이 연결에 못 넣었으면 넣는다 (처음, 또는 다시 붙은 뒤)
+                if (wroteTo[0] != d && testVals[0] != null) {
+                    final String[] tv = testVals[0];
+                    sendQ.execute(new Runnable(){ public void run(){
+                        boolean ok = true;
+                        for (int i = 0; i + 1 < tv.length; i += 2) ok &= s.write(d, tv[i], tv[i + 1]);
+                        if (ok) wroteTo[0] = d;
+                    }});
+                }
                 // 2단계: 몇 분에 올라가는지 본다
                 long e = (now - t0[0]) / 1000;
                 boolean rose = v >= 0 && v - base[0] >= 10 && at > t0[0];
-                if (rose && e < 200) { endAlarmTest(tok, d, "local", dlg, this); return; }
-                if (rose) { endAlarmTest(tok, d, "utc", dlg, this); return; }
-                if (e > 370) { endAlarmTest(tok, d, "none", dlg, this); return; }
+                if (rose && e < 200) { endAlarmTest(tok, "local", dlg, this); return; }
+                if (rose) { endAlarmTest(tok, "utc", dlg, this); return; }
+                if (e > 370) { endAlarmTest(tok, "none", dlg, this); return; }
                 dlg.setMessage(String.format(java.util.Locale.KOREA,
                         "지난 시간  %d:%02d\n\n① 2:00 에 올라가면 — 한국 시각\n② 4:00 에 올라가면 — UTC\n\n지금 상체 %s\n\n이 화면을 켜 둔 채 기다려주세요.",
                         e / 60, e % 60, fmt("11", v)));
             }
             ui.postDelayed(this, 1000);
         }};
-        ui.postDelayed(loop[0], 1000);
+        ui.postDelayed(loop[0], 500);
     }
 
     private int pinOf(BedServer.Dev d, String key) {
@@ -2229,18 +2254,29 @@ public class MainActivity extends Activity {
     }
 
     /** 시험 끝 — 시험 알람을 끄고, 결과를 저장하고, 사용자 알람을 다시 넣는다 */
-    private void endAlarmTest(final String tok, final BedServer.Dev d, final String result,
+    private void endAlarmTest(final String tok, final String result,
                               android.app.AlertDialog dlg, Runnable loop) {
         alarmTesting = false;
         if (loop != null) ui.removeCallbacks(loop);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         try { dlg.dismiss(); } catch (Throwable ignored) {}
         if ("local".equals(result) || "utc".equals(result) || "none".equals(result)) Alarms.setClock(prefs, tok, result);
+        // 시험 알람을 반드시 끈다 — 안 그러면 매일 그 시각에 침대가 올라간다.
+        // 연결이 끊겨 있으면 1분까지 다시 시도하고, 그래도 안 되면 표시해 두었다가 다음 접속 때 끈다 (Alarms.push)
+        Alarms.markDirty(prefs, tok, true);
         final BedServer s = App.server();
-        sendQ.execute(new Runnable(){ public void run(){
-            s.write(d, "5", "0");
-            s.write(d, "6", "0");
-            Alarms.push(MainActivity.this, d);     // 시계를 알았으면 사용자 알람을 다시 넣는다 (기본은 모두 꺼짐)
+        bg(new Runnable(){ public void run(){
+            for (int i = 0; i < 60; i++) {
+                BedServer.Dev d = s.byToken(tok);
+                if (d != null && s.write(d, "5", "0") && s.write(d, "6", "0")) {
+                    Alarms.markDirty(prefs, tok, false);
+                    Alarms.push(MainActivity.this, d);     // 시계를 알았으면 사용자 알람을 다시 넣는다 (기본은 모두 꺼짐)
+                    App.addLog("알람", "시험 알람을 껐습니다");
+                    return;
+                }
+                try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
+            }
+            App.addLog("알람", "시험 알람을 아직 못 껐습니다 — 다음에 침대가 붙을 때 끕니다");
         }});
         App.addLog("알람", "시험 끝 · " + (result == null ? "그만둠" : result));
         renderAlarms();
