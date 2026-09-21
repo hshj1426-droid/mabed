@@ -39,7 +39,8 @@ src/kr/mabed/control/
   ServerService.java 포그라운드 서비스. 앱을 닫고 5분 뒤 모두 끔("앱을 닫아도 대기" stayOn 이면 계속). WakeLock·WifiLock 은 "연결 유지 강화"일 때만
   BootReceiver.java  재부팅 후 서버 되살리기 (stayOn·serverOn 이고 침대가 있을 때만)
   LanPeers.java      같은 와이파이의 다른 폰 찾기 (UDP 9098). MulticastLock 은 화면이 보일 때만, 한 번 찾은 폰은 /state 로 직접 확인
-  ApiServer.java     다른 폰이 보내는 명령 받기 (HTTP 9099: /state, /cmd, /rename) — 암호 없음
+  ApiServer.java     다른 폰이 보내는 명령 받기 (HTTP 9099) — 5.9.0부터 짝지은 폰만. /hello·/pair 외엔 집 열쇠 도장(HMAC) 필수
+  HomeKey.java       집 열쇠(짝짓기)·도장 만들기/확인
   Beds.java          등록 침대 목록 (prefs "beds" JSON)
   Net.java           와이파이 주소, 침대 AP 통신, isLan()
   Updates.java       깃허브 릴리스로 새 버전 확인 (REPO = hshj1426-droid/mabed)

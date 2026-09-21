@@ -14,9 +14,21 @@ public class LanPeers {
 
     public static class Peer {
         public String ip, phone = "";
+        public String home = "";   // 그 폰의 집 열쇠 표식 (없으면 "" · 옛 버전이면 null)
         public long seen;          // 마지막으로 소식을 들은 때 (알림 신호 또는 상태 응답)
         int fails;                 // 연달아 상태 응답이 없었던 횟수
         public final List<RemoteBed> beds = new ArrayList<>();
+        /** 옛 버전(5.8.0 이하) 폰인가 — 짝짓기를 못 한다 */
+        public boolean old() { return home == null; }
+    }
+
+    /** 이 폰의 집 열쇠 (없으면 "") */
+    private String myKey() { return app == null ? "" : HomeKey.get(app); }
+
+    /** 같은 집 열쇠를 가진 폰인가 */
+    public boolean paired(Peer p) {
+        String k = myKey();
+        return !k.isEmpty() && p.home != null && p.home.equals(HomeKey.id(k));
     }
 
     public static class RemoteBed {
@@ -83,7 +95,15 @@ public class LanPeers {
         mcast = null;
     }
 
+    /** 짝지은 폰만 (이 폰들의 침대만 조작할 수 있다) */
     public List<Peer> peers() {
+        List<Peer> out = new ArrayList<>();
+        for (Peer p : allPeers()) if (paired(p)) out.add(p);
+        return out;
+    }
+
+    /** 같은 와이파이에 보이는 모든 마베드 폰 (짝짓기·넘겨주기 목록용) */
+    public List<Peer> allPeers() {
         List<Peer> out = new ArrayList<>();
         long now = System.currentTimeMillis();
         synchronized (peers) {
@@ -103,7 +123,8 @@ public class LanPeers {
             try {
                 DatagramSocket s = new DatagramSocket();
                 s.setBroadcast(true);
-                byte[] msg = ("MABED|" + myId + "|" + myName).getBytes("UTF-8");
+                // MABED2|폰ID|집표식|이름 — 집표식은 열쇠에서 뽑은 짧은 값이라 열쇠는 알 수 없다
+                byte[] msg = ("MABED2|" + myId + "|" + HomeKey.id(myKey()) + "|" + myName).getBytes("UTF-8");
                 s.send(new DatagramPacket(msg, msg.length,
                         InetAddress.getByName("255.255.255.255"), UDP_PORT));
                 s.close();
@@ -129,14 +150,23 @@ public class LanPeers {
                 DatagramPacket p = new DatagramPacket(buf, buf.length);
                 s.receive(p);
                 String msg = new String(p.getData(), 0, p.getLength(), "UTF-8");
-                if (!msg.startsWith("MABED|")) continue;
-                String[] parts = msg.split("\\|", 3);
-                if (parts.length < 3 || parts[1].equals(myId)) continue;   // 내 것은 무시
+                String id, home, name;
+                if (msg.startsWith("MABED2|")) {
+                    String[] parts = msg.split("\\|", 4);
+                    if (parts.length < 4) continue;
+                    id = parts[1]; home = parts[2]; name = parts[3];
+                } else if (msg.startsWith("MABED|")) {             // 옛 버전 폰
+                    String[] parts = msg.split("\\|", 3);
+                    if (parts.length < 3) continue;
+                    id = parts[1]; home = null; name = parts[2];
+                } else continue;
+                if (id.equals(myId)) continue;   // 내 것은 무시
                 String ip = p.getAddress().getHostAddress();
                 synchronized (peers) {
                     Peer pe = peers.get(ip);
                     if (pe == null) { pe = new Peer(); pe.ip = ip; peers.put(ip, pe); }
-                    pe.phone = parts[2];
+                    pe.phone = name;
+                    pe.home = home;
                     pe.seen = System.currentTimeMillis();
                 }
             }
@@ -155,13 +185,20 @@ public class LanPeers {
                 Peer p = it.next();
                 if (now0 - p.seen > 10 * 60 * 1000) { it.remove(); continue; }
                 if (p.fails >= 3 && now0 - p.seen > 30000) continue;
+                if (!paired(p)) { synchronized (p.beds) { p.beds.clear(); } continue; }   // 짝이 아니면 묻지 않는다
                 known.add(p);
             }
         }
         for (final Peer p : known) {
             try {
-                String json = http("http://" + p.ip + ":" + ApiServer.PORT + "/state", 2500);
+                String json = http(signedUrl(p.ip, "/state"), 2500);
                 JSONObject o = new JSONObject(json);
+                if (o.has("auth") && !o.optBoolean("auth", true)) {
+                    // 열쇠가 안 맞는다 (상대가 짝을 풀었거나 다른 폰과 새로 짝지었다)
+                    synchronized (p.beds) { p.beds.clear(); }
+                    synchronized (peers) { p.fails++; }
+                    continue;
+                }
                 p.phone = o.optString("phone", p.phone);
                 JSONArray a = o.optJSONArray("beds");
                 List<RemoteBed> fresh = new ArrayList<>();
@@ -196,19 +233,44 @@ public class LanPeers {
     /** 이웃 폰을 거쳐 명령을 보낸다. 그 폰에 닿았고, 침대에도 전달됐으면 true */
     public boolean send(String peerIp, String token, String pin, String val) {
         try {
-            String r = http("http://" + peerIp + ":" + ApiServer.PORT + "/cmd?token=" + enc(token)
-                    + "&pin=" + enc(pin) + "&val=" + enc(val), 3000);
-            return new JSONObject(r).optBoolean("ok", true);
+            String r = http(signedUrl(peerIp, "/cmd?token=" + enc(token)
+                    + "&pin=" + enc(pin) + "&val=" + enc(val)), 3000);
+            return new JSONObject(r).optBoolean("ok", false);
         } catch (Exception e) { return false; }
     }
 
     /** 이웃 폰에 등록된 침대 이름을 바꾼다 */
     public boolean rename(String peerIp, String token, String name) {
         try {
-            String r = http("http://" + peerIp + ":" + ApiServer.PORT + "/rename?token=" + enc(token)
-                    + "&name=" + enc(name), 3000);
+            String r = http(signedUrl(peerIp, "/rename?token=" + enc(token)
+                    + "&name=" + enc(name)), 3000);
             return new JSONObject(r).optBoolean("ok", false);
         } catch (Exception e) { return false; }
+    }
+
+    /** 집 열쇠 도장을 찍은 주소: ...&ts=<지금>&sig=<앞부분 전체의 HMAC> */
+    private String signedUrl(String ip, String path) {
+        String base = path + (path.indexOf('?') < 0 ? "?" : "&") + "ts=" + System.currentTimeMillis();
+        return "http://" + ip + ":" + ApiServer.PORT + base + "&sig=" + HomeKey.sign(myKey(), base);
+    }
+
+    /** 짝짓기 요청 — 상대 폰 화면에 '허용'이 뜨고, 허용하면 집 열쇠를 받아 이 폰에 저장한다.
+     *  사람이 누를 때까지 최대 1분 기다린다. 돌려주는 값: null = 성공, 아니면 실패 이유 */
+    public String pair(String ip) {
+        try {
+            String r = http("http://" + ip + ":" + ApiServer.PORT + "/pair?name=" + enc(myName), 70000);
+            JSONObject o = new JSONObject(r);
+            if (!o.optBoolean("ok", false)) return o.optString("msg", "상대 폰이 옛 버전이거나 응답이 없습니다");
+            String key = o.optString("key", "");
+            if (key.length() < 32 || app == null) return "열쇠를 받지 못했습니다";
+            HomeKey.set(app, key);
+            App.addLog("짝", o.optString("phone", ip) + " 와 짝지었습니다");
+            return null;
+        } catch (FileNotFoundException e) {
+            return "상대 폰이 옛 버전입니다. 상대 폰도 새 버전으로 올려주세요";
+        } catch (Exception e) {
+            return "상대 폰에 닿지 않습니다 (" + e.getClass().getSimpleName() + ")";
+        }
     }
 
     private static String enc(String s) {

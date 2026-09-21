@@ -85,4 +85,4 @@ Gradle 도 AndroidX 도 안 쓴다. 수동 도구 사슬.
   그래서 `connectedDevice` 를 쓴다. 되돌리지 말 것.
 - `build.sh` 의 `--min-sdk-version 24 --target-sdk-version 35` 를 빼면
   안드로이드가 아주 오래된 앱으로 취급한다. 한 번 빠뜨려서 문제가 됐었다.
-- 9099 포트에는 아직 암호가 없다. 같은 와이파이의 누구나 침대를 조작할 수 있다.
+- 9099 포트는 5.9.0부터 짝지은 폰만 쓸 수 있다 (허용 버튼으로 짝짓기, 요청마다 HMAC 도장). 자세한 건 docs/PROTOCOL.md 5장.

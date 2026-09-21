@@ -28,6 +28,32 @@ public class App {
         android.content.Intent i = pendingConfirm; pendingConfirm = null; return i;
     }
 
+    /** 다른 폰이 보낸 짝짓기 요청 — 창구 스레드가 기다리고, 화면이 '허용/거절'로 답한다 */
+    public static class PairReq {
+        public final String name, ip;
+        public volatile boolean allowed = false, shown = false;
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        PairReq(String n, String i) { name = n; ip = i; }
+    }
+    private static PairReq pairReq;
+    private static long pairDeniedAt = 0;
+
+    /** 한 번에 하나만. 거절한 직후 10초는 새 요청을 받지 않는다 (창을 계속 띄우는 장난 막기) */
+    static synchronized PairReq pairAsk(String name, String ip) {
+        if (pairReq != null) return null;
+        if (System.currentTimeMillis() - pairDeniedAt < 10000) return null;
+        pairReq = new PairReq(name, ip);
+        ping();
+        return pairReq;
+    }
+    static synchronized PairReq pendingPair() { return pairReq; }
+    static synchronized void pairAnswer(PairReq r, boolean ok) {
+        r.allowed = ok;
+        if (!ok) pairDeniedAt = System.currentTimeMillis();
+        r.latch.countDown();
+    }
+    static synchronized void pairDone(PairReq r) { if (pairReq == r) pairReq = null; ping(); }
+
     /** 설치 결과를 화면에 알린다 (null = 성공 또는 알릴 것 없음) */
     private static String installMsg;
     private static boolean installDone;
@@ -82,6 +108,9 @@ public class App {
                         addLog("이웃", "다른 폰이 침대 이름을 '" + name + "' 로 바꿨습니다");
                     }
                     return hit;
+                }
+                public String homeKey(boolean create) {
+                    return create ? HomeKey.ensure(app) : HomeKey.get(app);
                 }
             });
         }

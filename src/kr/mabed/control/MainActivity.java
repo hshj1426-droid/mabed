@@ -458,6 +458,11 @@ public class MainActivity extends Activity {
                     wizName = n; wizHost = ip2; wizToken = Beds.newToken();
                     step = 1; renderStep();
                 }}));
+                if (beds.isEmpty() && remotes.isEmpty()) {
+                    // 내 침대 없이 상대 폰의 침대만 쓰려면 먼저 짝을 지어야 한다
+                    box.addView(u.small("다른 폰과 짝짓기 · 상대 침대만 쓸 때", new Runnable(){ public void run(){ pickPair(); }}));
+                    box.addView(u.note("이 폰에 침대를 등록하지 않고 가족 폰의 침대만 쓰려면, 두 폰 모두 앱을 연 채로 짝을 지으세요."));
+                }
                 if (!beds.isEmpty() || !remotes.isEmpty())
                     box.addView(u.small("취소", new Runnable(){ public void run(){ rebuild(); }}));
                 break;
@@ -1239,7 +1244,7 @@ public class MainActivity extends Activity {
         final Beds.Bed b = cur();
         if (b == null) { toast("이 폰에 등록된 침대를 먼저 고르세요"); return; }
 
-        final List<LanPeers.Peer> ps = lan.peers();
+        final List<LanPeers.Peer> ps = lan.allPeers();   // 넘겨주기는 침대 설정으로 하는 거라 짝이 아니어도 된다
         final List<String> labels = new ArrayList<>();
         final List<String> ips = new ArrayList<>();
         final List<String> names = new ArrayList<>();
@@ -1602,6 +1607,22 @@ public class MainActivity extends Activity {
         setBox.addView(u.note("연결 유지 강화: 평소엔 꺼 두세요. 폰 화면이 꺼진 뒤 한참 지나서 침대가 반응하지 않거나 "
                 + "'기다리는 중'으로 바뀌면 그때 켜세요. 켜면 폰이 잠들지 않아 배터리를 더 씁니다."));
 
+        setBox.addView(u.head("폰 짝짓기"));
+        LinearLayout gp = group();
+        StringBuilder mates = new StringBuilder();
+        for (LanPeers.Peer p : lan.peers()) { if (mates.length() > 0) mates.append(", "); mates.append(p.phone); }
+        boolean hasKey = HomeKey.has(this);
+        gp.addView(linkRow("짝지은 폰", !hasKey ? "없음" : (mates.length() == 0 ? "지금 안 보임" : mates.toString()), null));
+        gp.addView(u.hair());
+        gp.addView(linkRow("다른 폰과 짝짓기", null, new Runnable(){ public void run(){ pickPair(); }}));
+        if (hasKey) {
+            gp.addView(u.hair());
+            gp.addView(linkRow("짝 풀기", null, new Runnable(){ public void run(){ unpair(); }}));
+        }
+        setBox.addView(gp);
+        setBox.addView(u.note("짝지은 폰끼리만 서로의 침대를 조작할 수 있습니다. 같은 와이파이의 다른 사람 폰이나 기기는 조작할 수 없습니다. "
+                + "처음 한 번, 두 폰 모두 앱을 열어둔 채로 한쪽에서 짝짓기를 누르고 다른 쪽에서 '허용'을 누르면 됩니다."));
+
         setBox.addView(u.head("앱"));
         LinearLayout g4 = group();
         g4.addView(linkRow("새 버전 확인하고 설치", "지금 " + Updates.installed(this),
@@ -1652,9 +1673,10 @@ public class MainActivity extends Activity {
             if (dd != null) sb.append(pinsText(dd.pins));
             sb.append('\n');
         }
-        for (LanPeers.Peer p : lan.peers())
+        for (LanPeers.Peer p : lan.allPeers())
             sb.append("이웃 ").append(p.phone).append("  ").append(p.ip)
-              .append("  침대 ").append(p.beds.size()).append("대\n");
+              .append(lan.paired(p) ? "  짝 · 침대 " + p.beds.size() + "대" : (p.old() ? "  옛 버전" : "  짝 아님"))
+              .append('\n');
         sb.append('\n');
         for (String[] x : App.log()) sb.append(x[0]).append("  ").append(x[1]).append("  ").append(x[2]).append('\n');
 
@@ -1805,6 +1827,7 @@ public class MainActivity extends Activity {
 
     private void refresh() {
         handleInstall();
+        handlePair();
         // 다른 폰이 이 폰 침대의 이름을 바꾼 경우 등 — 저장된 목록을 다시 읽는다
         if (App.bedsRev != seenRev) {
             seenRev = App.bedsRev;
@@ -1899,13 +1922,140 @@ public class MainActivity extends Activity {
                             + "빼도 ↗ 표시로 계속 조작할 수 있습니다.");
                     noticeBtn.setText("이 폰 목록에서 빼기");
                     noticeAction = new Runnable(){ public void run(){ removeBed(); }};
+                    noticeBtn.setVisibility(View.VISIBLE);
                     noticeCard.setVisibility(View.VISIBLE);
                     return;
                 }
             }
         }
+        // 같은 와이파이에 짝짓지 않은 마베드 폰이 있다 (5.9.0 부터는 짝을 지어야 서로의 침대를 조작할 수 있다)
+        if (lan.peers().isEmpty()) {
+            for (final LanPeers.Peer p : lan.allPeers()) {
+                if (lan.paired(p)) continue;
+                if (p.old()) {
+                    noticeView.setText("같은 와이파이에 '" + p.phone + "' 폰이 있지만 옛 버전입니다.\n"
+                            + "그 폰에서도 새 버전을 설치하면 짝을 지어 서로의 침대를 조작할 수 있습니다.");
+                    noticeBtn.setVisibility(View.GONE);
+                } else {
+                    noticeView.setText("같은 와이파이에 '" + p.phone + "' 폰이 있습니다.\n"
+                            + "짝을 지으면 서로의 침대를 조작할 수 있습니다. 두 폰 모두 앱을 열어두세요.");
+                    noticeBtn.setText("'" + p.phone + "' 와 짝짓기");
+                    noticeBtn.setVisibility(View.VISIBLE);
+                    noticeAction = new Runnable(){ public void run(){ doPair(p.ip, p.phone); }};
+                }
+                noticeCard.setVisibility(View.VISIBLE);
+                return;
+            }
+        }
         noticeAction = null;
+        noticeBtn.setVisibility(View.VISIBLE);
         noticeCard.setVisibility(View.GONE);
+    }
+
+    // ── 폰 짝짓기 (9099 창구 잠금) ─────────────────────────
+    private android.app.AlertDialog pairDialog;     // 다른 폰의 요청에 대한 '허용/거절' 창
+
+    /** 다른 폰이 짝짓기를 요청했으면 '허용/거절'을 묻는다 */
+    private void handlePair() {
+        final App.PairReq r = App.pendingPair();
+        if (r == null) {
+            if (pairDialog != null && pairDialog.isShowing()) try { pairDialog.dismiss(); } catch (Throwable ignored) {}
+            pairDialog = null;
+            return;
+        }
+        if (r.shown || !App.uiVisible || !alive()) return;
+        r.shown = true;
+        pairDialog = new android.app.AlertDialog.Builder(this)
+            .setTitle("짝짓기 요청")
+            .setMessage("'" + r.name + "' 폰 (" + r.ip + ") 이 이 폰과 짝을 짓자고 합니다.\n\n"
+                    + "허용하면 두 폰이 서로의 침대를 조작할 수 있습니다.\n"
+                    + "우리 집 폰이 아니면 거절하세요.")
+            .setCancelable(false)
+            .setPositiveButton("허용", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    App.pairAnswer(r, true); remoteSig = ""; toast("짝지었습니다"); } })
+            .setNegativeButton("거절", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) { App.pairAnswer(r, false); } })
+            .show();
+    }
+
+    /** 짝지을 폰 고르기 */
+    private void pickPair() {
+        final List<String> labels = new ArrayList<>(), ips = new ArrayList<>(), names = new ArrayList<>();
+        for (LanPeers.Peer p : lan.allPeers()) {
+            if (lan.paired(p)) continue;
+            labels.add(p.phone + "   " + p.ip + (p.old() ? "   · 옛 버전" : ""));
+            ips.add(p.old() ? "" : p.ip);
+            names.add(p.phone);
+        }
+        labels.add("주소를 직접 입력하기");
+        ips.add("manual"); names.add("");
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("어느 폰과 짝을 지을까요?")
+            .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int which) {
+                    String ip = ips.get(which);
+                    if (ip.isEmpty()) { toast("그 폰에서 새 버전을 먼저 설치해주세요"); return; }
+                    if (ip.equals("manual")) { pairManual(); return; }
+                    doPair(ip, names.get(which));
+                } })
+            .setNegativeButton("취소", null).show();
+    }
+
+    private void pairManual() {
+        final EditText e = u.input("예: 192.168.0.10", "", false);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("짝지을 폰의 주소")
+            .setMessage("상대 폰에서 앱을 열고 설정 → '이 폰 주소'에 나오는 숫자를 넣으세요.")
+            .setView(e)
+            .setPositiveButton("짝짓기", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    String ip = e.getText().toString().trim();
+                    if (!Net.isLan(ip)) { toast("집 안 주소가 아닙니다"); return; }
+                    doPair(ip, ip);
+                } })
+            .setNegativeButton("취소", null).show();
+    }
+
+    /** 상대 폰에 짝짓기를 요청하고, 상대가 '허용'을 누를 때까지 기다린다 (최대 1분) */
+    private void doPair(final String ip, final String name) {
+        final android.app.AlertDialog wait = new android.app.AlertDialog.Builder(this)
+            .setTitle("짝짓기")
+            .setMessage("'" + name + "' 폰에 '짝짓기 요청' 창이 떴습니다.\n그 폰에서 [허용]을 눌러주세요.\n\n(최대 1분 기다립니다)")
+            .setCancelable(false)
+            .show();
+        bg(new Runnable(){ public void run(){
+            final String err = lan.pair(ip);
+            post(new Runnable(){ public void run(){
+                try { wait.dismiss(); } catch (Throwable ignored) {}
+                if (!alive()) return;
+                if (err == null) {
+                    remoteSig = "";
+                    toast("짝지었습니다. 곧 상대 침대가 보입니다");
+                    if (screen == SCR_SETTINGS) renderSettings();
+                } else {
+                    new android.app.AlertDialog.Builder(MainActivity.this)
+                        .setTitle("짝짓지 못했습니다").setMessage(err)
+                        .setPositiveButton("알겠습니다", null).show();
+                }
+            }});
+        }});
+    }
+
+    private void unpair() {
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("짝을 풀까요?")
+            .setMessage("이 폰의 집 열쇠를 버립니다. 짝지었던 폰들과 서로 조작할 수 없게 됩니다.\n"
+                    + "폰을 잃어버렸거나 바꿨을 때 쓰세요. 남은 폰끼리는 다시 짝을 지으면 됩니다.")
+            .setPositiveButton("짝 풀기", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    HomeKey.clear(MainActivity.this);
+                    remoteSig = "";
+                    App.addLog("짝", "짝을 풀었습니다");
+                    toast("짝을 풀었습니다");
+                    renderSettings();
+                } })
+            .setNegativeButton("취소", null).show();
     }
 
     /** 폰 주소가 침대에 심어준 주소와 달라졌는지 본다 */
