@@ -45,6 +45,10 @@ jobs:
           $BT/d8 --lib $PLAT --output w/dex $(find w/cls -name '*.class')
           ls -l w/dex/classes.dex
 
+      # 침대에 보내는 알람 값 형식과 한국 시각→UTC 변환 (docs/HISTORY.md 5.10.0)
+      - name: 알람 시험
+        run: bash test/alarms/run.sh "$ANDROID_HOME/platforms/android-35/android.jar"
+
       # 실제 ApiServer·LanPeers·HomeKey·BedServer 를 두 프로그램으로 돌려 35가지 확인 (docs/HISTORY.md 5.9.1)
       - name: 짝짓기 시험
         run: |

@@ -56,7 +56,10 @@ public class App {
         if (SERVER == null) {
             SERVER = new BedServer(new BedServer.Listener() {
                 public void onLog(String kind, String text) { addLog(kind, text); }
-                public void onDevices(List<BedServer.Dev> d) { ping(); ServerService.devicesChanged(); }
+                public void onDevices(List<BedServer.Dev> d) {
+                    ping(); ServerService.devicesChanged();
+                    Alarms.onDevices(appCtx, d);   // 새로 접속한 침대에 알람 설정을 넣어준다 (원래는 제조사 서버가 하던 일)
+                }
             });
         }
         return SERVER;
@@ -79,8 +82,12 @@ public class App {
     }
 
     /** 이웃 폰 창구(9099)와 이웃 찾기(9098)를 한 번만 켠다 — 화면과 서비스 양쪽에서 부른다 */
+    /** 앱 전체 Context — 침대가 접속할 때 저장된 알람을 읽으려고 */
+    static volatile Context appCtx;
+
     public static synchronized void startNet(Context ctx) {
         final Context app = ctx.getApplicationContext();
+        appCtx = app;
         if (API == null) {
             API = new ApiServer(new ApiServer.Host() {
                 // 화면이 가진 목록이 아니라 저장된 목록을 매번 읽는다 — 화면이 새로 떠도 어긋나지 않게

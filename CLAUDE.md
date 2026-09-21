@@ -43,6 +43,7 @@ src/kr/mabed/control/
   HomeKey.java       집 열쇠(짝짓기)·도장 만들기/확인
   Beds.java          등록 침대 목록 (prefs "beds" JSON)
   Net.java           와이파이 주소, 침대 AP 통신, isLan()
+  Alarms.java        침대 자체 알람(V1~V7, V12). 침대가 붙을 때마다 넣어준다. 시계 방식(local/utc) 시험 전엔 아무것도 안 보냄
   Updates.java       깃허브 릴리스로 새 버전 확인 (REPO = hshj1426-droid/mabed)
   Updater.java       새 버전 내려받기(진행 표시) → 안드로이드 기본 설치 화면(ACTION_VIEW). 앱을 켤 때 확인하고 묻는다
   ApkProvider.java   받은 APK 를 설치 화면에 건네는 창구 (FileProvider 대신 직접, exported=false). PackageInstaller 세션 방식은 사용자 폰에서 멈춰서 5.9.2 에 버림
@@ -93,6 +94,7 @@ unzip -p build/mabed-X.apk classes.dex | strings | grep kr/mabed/control   # 새
 | V13 | 다리 각도 | 0~45 |
 | V14 | 테이블 | 0~850 · 테이블 미설치 제품은 이 핀이 다리를 움직인다. 설정에서 켠 경우만 노출 |
 | V41 | 정지 | 1 (쓰기 전용) |
+| V1~V3 · V5~V7 · V12 | 알람 1~3 시각 · 켜기 · 알람 때 상체 높이 | Alarms.java, docs/PROTOCOL.md |
 | V52 | 무드등 | 0/1 |
 | V61 | 스피커 | 0/1 · 켠 뒤 블루투스 `XDADADZ` 연결 |
 | V8, V15 | 미확인 | |

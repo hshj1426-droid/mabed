@@ -13,7 +13,7 @@ rm -rf "$W"; mkdir -p "$W/cls" "$W/out" "$W/gen"
 SEP=":"; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) SEP=";"; W="$(cygpath -w "$W")"; T="$(cygpath -w "$T")"; ROOT="$(cygpath -w "$ROOT")";; esac
 # 앱 코드 (R 없이 컴파일되는 파일만 — 시험에 필요한 것)
 APP_SRC=()
-for n in App ApiServer BedServer Beds HomeKey LanPeers Net; do APP_SRC+=("$ROOT/src/kr/mabed/control/$n.java"); done
+for n in Alarms App ApiServer BedServer Beds HomeKey LanPeers Net; do APP_SRC+=("$ROOT/src/kr/mabed/control/$n.java"); done
 javac --release 17 -nowarn -encoding UTF-8 -classpath "$ANDROID_JAR" -d "$W/cls" \
   "${APP_SRC[@]}" "$T/stub-ServerService.java"
 # 가짜 Context·저장소가 진짜보다 앞에 오게

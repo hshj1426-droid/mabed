@@ -164,6 +164,7 @@ public class ServerService extends Service {
         } else {
             startForeground(1, n);
         }
+        App.appCtx = getApplicationContext();   // 침대가 붙자마자 알람 설정을 보낼 수 있게 먼저
         App.server().start();
         // 재부팅 뒤 화면을 안 열어도 다른 폰이 이 폰의 침대를 조작할 수 있게
         try { App.startNet(this); } catch (Throwable ignored) {}

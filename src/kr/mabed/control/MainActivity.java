@@ -53,6 +53,8 @@ public class MainActivity extends Activity {
     private String askedVer = "";               // 이번에 이미 물어본 새 버전
     private boolean updWaiting = false;         // 설치를 넘기고 안드로이드의 답을 기다리는 중
     private LinearLayout tabRow;
+    private LinearLayout alarmBox;
+    private boolean alarmTesting = false;
     private View heroCard, heroPrev, heroNext;
     private TextView heroName, heroSub, heroDots;
     /** 지난번에 보던 침대 — 이웃 침대면 목록이 도착했을 때 그리로 옮겨준다 */
@@ -910,6 +912,11 @@ public class MainActivity extends Activity {
         t1.addView(toggleCard(speakerState, "61", "스피커", Glyph.SPEAKER), u.w(1, 4));
         c.addView(t1);
         c.addView(u.note("스피커를 켠 뒤 폰 블루투스에서 XDADADZ 에 연결하면 소리가 납니다."));
+
+        // ── 알람 (원래 앱의 ALARM 1·2·3 — 침대가 스스로 실행) ──
+        c.addView(u.head("알람"));
+        alarmBox = u.col();
+        c.addView(alarmBox);
         c.addView(u.note("이름 바꾸기 · 테이블 · 각도 맞추기 · 침대 추가는 오른쪽 위 톱니(설정)에 있습니다."));
         c.addView(spacer(6));
 
@@ -1491,6 +1498,7 @@ public class MainActivity extends Activity {
 
     /** 침대마다 다른 것(테이블 유무, 각도 맞춤)을 화면에 반영 */
     private void applyBedSpecific() {
+        renderAlarms();
         if (tableRow != null) tableRow.setVisibility(hasTable() ? View.VISIBLE : View.GONE);
         for (Object[] p : poses) {
             int body = (Integer) p[2], leg = (Integer) p[3];
@@ -1946,6 +1954,320 @@ public class MainActivity extends Activity {
         noticeAction = null;
         noticeBtn.setVisibility(View.VISIBLE);
         noticeCard.setVisibility(View.GONE);
+    }
+
+    // ── 알람 ───────────────────────────────────────────
+    /** 메인 화면의 알람 칸 */
+    private void renderAlarms() {
+        if (alarmBox == null) return;
+        alarmBox.removeAllViews();
+        final Beds.Bed b = cur();
+        if (b == null) {
+            LanPeers.RemoteBed rb = curRemote();
+            alarmBox.addView(u.note("이 침대의 알람은 주인 폰"
+                    + (rb != null && !rb.phone.isEmpty() ? "(" + rb.phone + ")" : "") + " 에서 설정합니다."));
+            return;
+        }
+        final String tok = b.token;
+        if (!Alarms.ready(prefs, tok)) {
+            boolean none = Alarms.clock(prefs, tok).equals("none");
+            LinearLayout box = u.col();
+            box.addView(u.text(none
+                    ? "지난 알람 시험에서 침대가 움직이지 않았습니다.\n침대가 연결된 상태에서 한 번 더 해볼 수 있습니다."
+                    : "원래 앱의 알람을 되살렸습니다 — 정해진 시각에 침대가 스스로 상체를 올려 깨워줍니다. "
+                      + "폰이 꺼져 있어도 침대가 알아서 합니다.\n\n처음 한 번, 침대 시계를 맞추는 5분짜리 시험이 필요합니다.",
+                    13.5f, u.fg, false));
+            Button go = u.btn(none ? "알람 시험 다시 하기" : "알람 시험 시작 (5분)", u.accent, 0xFFFFFFFF, 0, 14, 12,
+                    new Runnable(){ public void run(){ startAlarmTest(); }});
+            LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-1, -2);
+            gp.topMargin = u.dp(10); gp.bottomMargin = 0;
+            go.setLayoutParams(gp);
+            box.addView(go);
+            alarmBox.addView(u.card(box, 14));
+            return;
+        }
+        LinearLayout g = u.col();
+        g.setBackground(u.box(u.card, u.line, 18));
+        for (int i = 1; i <= Alarms.COUNT; i++) {
+            if (i > 1) g.addView(u.hair());
+            g.addView(alarmRow(tok, i));
+        }
+        g.addView(u.hair());
+        // 알람 때 상체 높이 (원래 앱의 '알람시 상체높이' 슬라이더)
+        LinearLayout hb = u.col();
+        hb.setPadding(u.dp(16), u.dp(12), u.dp(16), u.dp(6));
+        LinearLayout hd = new LinearLayout(this);
+        hd.setOrientation(LinearLayout.HORIZONTAL);
+        hd.addView(u.text("알람 때 상체 높이", 14, u.muted, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        final TextView hv = u.text(fmt("11", Alarms.height(prefs, tok)), 16, u.fg, true);
+        hd.addView(hv);
+        hb.addView(hd);
+        final Slider hs = new Slider(this, u.line, u.accent, u.card, u.accent);
+        hs.setMax(80);
+        hs.setValue(Alarms.height(prefs, tok));
+        hs.setListener(new Slider.Listener() {
+            public void onSlide(int v, boolean done) {
+                hv.setText(fmt("11", v));
+                if (done) { Alarms.setHeight(prefs, tok, v); pushAlarms(tok); }
+            }
+            public void onCancel() { hv.setText(fmt("11", Alarms.height(prefs, tok))); }
+        });
+        hb.addView(hs, new LinearLayout.LayoutParams(-1, u.dp(46)));
+        g.addView(hb);
+        alarmBox.addView(g);
+        alarmBox.addView(u.note("알람은 침대가 스스로 실행합니다. 폰이 꺼져 있어도 됩니다. "
+                + "시작 시각이 되면 상체를 위 높이까지 올립니다."));
+    }
+
+    private View alarmRow(final String tok, final int i) {
+        final Alarms.A a = Alarms.get(prefs, tok, i);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(u.dp(16), u.dp(12), u.dp(12), u.dp(12));
+        row.setMinimumHeight(u.rawDp(56));
+        LinearLayout col = u.col();
+        col.addView(u.text("알람 " + i + "   " + Alarms.hm(a.start), 16, a.on ? u.fg : u.muted, true));
+        col.addView(u.text((a.dur / 60) + "분 동안 올림 · " + Alarms.daysText(a.days), 12.5f, u.muted, false));
+        row.addView(col, new LinearLayout.LayoutParams(0, -2, 1f));
+        TextView pill = u.pill(a.on ? "켜짐" : "꺼짐", a.on ? 0xFFFFFFFF : u.muted, a.on ? u.accent : u.bg, a.on ? 0 : u.line);
+        pill.setPadding(u.dp(16), u.dp(9), u.dp(16), u.dp(10));
+        pill.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            a.on = !a.on;
+            if (a.on && a.days == 0) a.days = 0x7F;
+            Alarms.put(prefs, tok, i, a);
+            renderAlarms(); pushAlarms(tok);
+            toast(a.on ? "알람 " + i + " 켰습니다 · " + Alarms.hm(a.start) : "알람 " + i + " 껐습니다");
+        }});
+        pill.setContentDescription("알람 " + i + (a.on ? " 끄기" : " 켜기"));
+        row.addView(pill, new LinearLayout.LayoutParams(-2, -2));
+        row.setClickable(true);
+        row.setBackground(new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(u.dark ? 0x33FFFFFF : 0x22000000), null,
+                new android.graphics.drawable.ColorDrawable(0xFFFFFFFF)));
+        row.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { editAlarm(tok, i); }});
+        return row;
+    }
+
+    /** 알람 하나 고치기 — 시각, 올리는 시간, 요일 */
+    private void editAlarm(final String tok, final int i) {
+        final Alarms.A a = Alarms.get(prefs, tok, i);
+        LinearLayout box = u.col();
+        box.setPadding(u.dp(20), u.dp(8), u.dp(20), 0);
+
+        box.addView(u.text("시각", 13, u.muted, true));
+        final Button timeBtn = u.btn(Alarms.hm(a.start), u.card, u.fg, u.line, 24, 10, null);
+        timeBtn.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+            new android.app.TimePickerDialog(MainActivity.this, new android.app.TimePickerDialog.OnTimeSetListener() {
+                public void onTimeSet(android.widget.TimePicker tp, int h, int m) {
+                    a.start = h * 3600 + m * 60; timeBtn.setText(Alarms.hm(a.start)); }
+            }, a.start / 3600, (a.start / 60) % 60, true).show();
+        }});
+        box.addView(timeBtn);
+
+        box.addView(u.text("몇 분에 걸쳐 올릴까요", 13, u.muted, true));
+        LinearLayout durRow = u.row(8);
+        final List<Button> durBtns = new ArrayList<>();
+        for (final int d : Alarms.DURATIONS) {
+            final Button bt = u.btn((d / 60) + "분", u.card, u.fg, u.line, 13, 8, null);
+            durBtns.add(bt);
+            bt.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                a.dur = d; paintChoice(durBtns, Arrays.asList(1, 3, 5, 10).indexOf(d / 60)); }});
+            durRow.addView(bt, u.w(1, 2));
+        }
+        int di = 0;
+        for (int x = 0; x < Alarms.DURATIONS.length; x++) if (Alarms.DURATIONS[x] == a.dur) di = x;
+        paintChoice(durBtns, di);
+        box.addView(durRow);
+
+        box.addView(u.text("요일", 13, u.muted, true));
+        LinearLayout dayRow = u.row(8);
+        final Button[] dayBtns = new Button[7];
+        for (int x = 0; x < 7; x++) {
+            final int bit = 1 << x;
+            final Button bt = u.btn(Alarms.DAY_NAMES[x], u.card, u.fg, u.line, 12.5f, 8, null);
+            bt.setMinWidth(0); bt.setMinimumWidth(0);
+            dayBtns[x] = bt;
+            bt.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                a.days ^= bit; paintDays(dayBtns, a.days); }});
+            dayRow.addView(bt, u.w(1, 1));
+        }
+        paintDays(dayBtns, a.days);
+        box.addView(dayRow);
+
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("알람 " + i)
+            .setView(box)
+            .setPositiveButton("저장하고 켜기", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    if (a.days == 0) { toast("요일을 하나 이상 골라주세요"); return; }
+                    a.on = true;
+                    Alarms.put(prefs, tok, i, a);
+                    renderAlarms(); pushAlarms(tok);
+                    toast("알람 " + i + " · " + Alarms.describe(a));
+                } })
+            .setNeutralButton("끄기", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    a.on = false; Alarms.put(prefs, tok, i, a); renderAlarms(); pushAlarms(tok); } })
+            .setNegativeButton("취소", null).show();
+    }
+
+    private void paintChoice(List<Button> bs, int on) {
+        for (int x = 0; x < bs.size(); x++) {
+            boolean s = x == on;
+            u.ripple(bs.get(x), s ? u.accent : u.card, s ? 0 : u.line, 14);
+            bs.get(x).setTextColor(s ? 0xFFFFFFFF : u.fg);
+        }
+    }
+
+    private void paintDays(Button[] bs, int days) {
+        for (int x = 0; x < 7; x++) {
+            boolean s = (days & (1 << x)) != 0;
+            u.ripple(bs[x], s ? u.accent : u.card, s ? 0 : u.line, 14);
+            bs[x].setTextColor(s ? 0xFFFFFFFF : u.fg);
+        }
+    }
+
+    /** 바뀐 알람을 침대에 바로 넣는다. 침대가 연결돼 있지 않으면 다음에 접속할 때 들어간다 */
+    private void pushAlarms(final String tok) {
+        final BedServer.Dev d = App.server().byToken(tok);
+        if (d == null) { toast("저장했습니다. 침대가 연결되면 바로 들어갑니다"); return; }
+        sendQ.execute(new Runnable(){ public void run(){ Alarms.push(MainActivity.this, d); }});
+    }
+
+    // ── 알람 시험 — 침대 시계가 한국 시각인지 UTC 인지 알아낸다 ──────────
+    // 알람 1 은 '한국 시각' 기준으로 2분 뒤, 알람 2 는 'UTC' 기준으로 4분 뒤에 맞춰 넣고,
+    // 침대가 몇 분에 올라가는지 상체 값으로 확인한다. 끝나면 두 시험 알람은 끈다.
+    private static final int TEST_HEIGHT = 30;
+
+    private void startAlarmTest() {
+        final Beds.Bed b = cur();
+        final BedServer.Dev d = dev();
+        if (b == null || d == null) { toast("침대가 연결돼 있어야 시험할 수 있습니다"); return; }
+        if (alarmTesting) return;
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("알람 시험 (5분)")
+            .setMessage("1. 침대를 평평하게 눕힙니다\n"
+                    + "2. 2분 뒤, 또는 4분 뒤에 상체가 조금(" + fmt("11", TEST_HEIGHT) + ") 올라갑니다\n"
+                    + "3. 몇 분에 올라가는지로 침대 시계를 맞춥니다\n\n"
+                    + "끝날 때까지 이 화면을 켜 두세요. 침대 위에 물건이 없는지 확인해주세요.")
+            .setPositiveButton("시작", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface x, int w) { runAlarmTest(b.token, d); } })
+            .setNegativeButton("취소", null).show();
+    }
+
+    private void runAlarmTest(final String tok, final BedServer.Dev d) {
+        alarmTesting = true;
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        final BedServer s = App.server();
+        final android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
+            .setTitle("알람 시험")
+            .setMessage("평평하게 눕히는 중…")
+            .setCancelable(false)
+            .setNegativeButton("그만두기", null)
+            .show();
+        final long[] t0 = { 0 };          // 시험 알람을 넣은 시각 (0 = 아직 눕히는 중)
+        final int[] base = { -1 };
+        final long began = System.currentTimeMillis();
+        App.addLog("알람", "시험 시작");
+        sendQ.execute(new Runnable(){ public void run(){ s.write(d, "11", "0"); }});
+
+        final Runnable[] loop = new Runnable[1];
+        dlg.getButton(android.app.AlertDialog.BUTTON_NEGATIVE).setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { endAlarmTest(tok, d, null, dlg, loop[0]); }});
+
+        loop[0] = new Runnable() { public void run() {
+            if (!alarmTesting) return;
+            long now = System.currentTimeMillis();
+            final int v = pinOf(d, "V11");
+            long at = d.pinAt.containsKey("V11") ? d.pinAt.get("V11") : 0;
+            sendQ.execute(new Runnable(){ public void run(){ s.read(d, "11"); }});
+
+            if (App.server().byToken(tok) != d) { endAlarmTest(tok, d, "lost", dlg, this); return; }
+
+            if (t0[0] == 0) {
+                // 1단계: 평평하게 눕히기 (최대 90초)
+                if (v >= 0 && v <= 5 && at > began + 1000 || now - began > 90000) {
+                    if (v > 20) { endAlarmTest(tok, d, "notflat", dlg, this); return; }
+                    base[0] = Math.max(0, v);
+                    final int L = Alarms.nowOfDay(), off = Alarms.tzOffset();
+                    final String tz = java.util.TimeZone.getDefault().getID();
+                    final String a1 = Alarms.timeInput((L + 120) % 86400, (L + 180) % 86400, 0x7F, tz, off);
+                    final int u2 = ((L - off + 240) % 86400 + 86400) % 86400;
+                    final String a2 = Alarms.timeInput(u2, (u2 + 60) % 86400, 0x7F, "UTC", 0);
+                    sendQ.execute(new Runnable(){ public void run(){
+                        s.write(d, "7", "0");
+                        s.write(d, "12", String.valueOf(TEST_HEIGHT));
+                        s.write(d, "1", a1);
+                        s.write(d, "2", a2);
+                        s.write(d, "5", "1");
+                        s.write(d, "6", "1");
+                    }});
+                    t0[0] = System.currentTimeMillis();
+                    App.addLog("알람", "시험 알람을 넣었습니다 (①한국 시각 2분 뒤 · ②UTC 4분 뒤)");
+                } else dlg.setMessage("평평하게 눕히는 중…  지금 상체 " + fmt("11", v));
+            } else {
+                // 2단계: 몇 분에 올라가는지 본다
+                long e = (now - t0[0]) / 1000;
+                boolean rose = v >= 0 && v - base[0] >= 10 && at > t0[0];
+                if (rose && e < 200) { endAlarmTest(tok, d, "local", dlg, this); return; }
+                if (rose) { endAlarmTest(tok, d, "utc", dlg, this); return; }
+                if (e > 370) { endAlarmTest(tok, d, "none", dlg, this); return; }
+                dlg.setMessage(String.format(java.util.Locale.KOREA,
+                        "지난 시간  %d:%02d\n\n① 2:00 에 올라가면 — 한국 시각\n② 4:00 에 올라가면 — UTC\n\n지금 상체 %s\n\n이 화면을 켜 둔 채 기다려주세요.",
+                        e / 60, e % 60, fmt("11", v)));
+            }
+            ui.postDelayed(this, 1000);
+        }};
+        ui.postDelayed(loop[0], 1000);
+    }
+
+    private int pinOf(BedServer.Dev d, String key) {
+        String v = d.pins.get(key);
+        if (v != null) try { return (int) Double.parseDouble(v.trim()); } catch (Exception ignored) {}
+        return -1;
+    }
+
+    /** 시험 끝 — 시험 알람을 끄고, 결과를 저장하고, 사용자 알람을 다시 넣는다 */
+    private void endAlarmTest(final String tok, final BedServer.Dev d, final String result,
+                              android.app.AlertDialog dlg, Runnable loop) {
+        alarmTesting = false;
+        if (loop != null) ui.removeCallbacks(loop);
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        try { dlg.dismiss(); } catch (Throwable ignored) {}
+        if ("local".equals(result) || "utc".equals(result) || "none".equals(result)) Alarms.setClock(prefs, tok, result);
+        final BedServer s = App.server();
+        sendQ.execute(new Runnable(){ public void run(){
+            s.write(d, "5", "0");
+            s.write(d, "6", "0");
+            Alarms.push(MainActivity.this, d);     // 시계를 알았으면 사용자 알람을 다시 넣는다 (기본은 모두 꺼짐)
+        }});
+        App.addLog("알람", "시험 끝 · " + (result == null ? "그만둠" : result));
+        renderAlarms();
+        if (result == null || !alive()) return;
+        String title, msg;
+        switch (result) {
+            case "local": case "utc":
+                title = "알람 준비 완료";
+                msg = "침대가 " + (result.equals("local") ? "2분" : "4분") + " 뒤에 올라갔습니다 — 침대 시계를 맞췄습니다.\n\n"
+                        + "이제 메인 화면 '알람'에서 시각과 요일을 정하고 켜면 됩니다. 폰이 꺼져 있어도 침대가 알아서 올라갑니다.\n"
+                        + "침대가 시험 때문에 올라가 있으니 필요하면 평평하게 눕혀주세요.";
+                break;
+            case "none":
+                title = "침대가 움직이지 않았습니다";
+                msg = "5분 동안 두 시험 알람 모두 반응이 없었습니다. 침대의 알람 방식이 예상과 다른 것 같습니다.\n\n"
+                        + "이 화면을 캡처해서 보내주시면 다른 방법(폰이 알람을 맡는 방식)을 준비하겠습니다.";
+                break;
+            case "notflat":
+                title = "시험을 시작하지 못했습니다";
+                msg = "침대가 평평하게 눕혀지지 않았습니다. 리모컨이나 '평평하게'로 눕힌 뒤 다시 해주세요.";
+                break;
+            default:
+                title = "시험이 중단됐습니다";
+                msg = "시험 중에 침대 연결이 끊겼습니다. 연결된 뒤 다시 해주세요.";
+        }
+        new android.app.AlertDialog.Builder(this).setTitle(title).setMessage(msg)
+            .setPositiveButton("알겠습니다", null).show();
     }
 
     // ── 폰 짝짓기 (9099 창구 잠금) ─────────────────────────
