@@ -38,9 +38,14 @@ public class App {
     private static PairReq pairReq;
     private static long pairDeniedAt = 0;
 
+    /** 이 폰이 다른 폰에 짝짓기를 요청하는 중인가 — 그동안엔 남의 요청을 받지 않는다 (서로 동시에 요청하면 열쇠가 엇갈린다) */
+    private static boolean pairOut = false;
+    static synchronized boolean pairOutStart() { if (pairOut || pairReq != null) return false; pairOut = true; return true; }
+    static synchronized void pairOutEnd() { pairOut = false; }
+
     /** 한 번에 하나만. 거절한 직후 10초는 새 요청을 받지 않는다 (창을 계속 띄우는 장난 막기) */
     static synchronized PairReq pairAsk(String name, String ip) {
-        if (pairReq != null) return null;
+        if (pairReq != null || pairOut) return null;
         if (System.currentTimeMillis() - pairDeniedAt < 10000) return null;
         pairReq = new PairReq(name, ip);
         ping();

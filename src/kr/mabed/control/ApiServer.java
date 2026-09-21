@@ -116,6 +116,9 @@ public class ApiServer {
         try { ts = Long.parseLong(query(signed).get("ts")); } catch (Exception e) { return "시각이 없습니다"; }
         long now = System.currentTimeMillis();
         if (Math.abs(now - ts) > HomeKey.MAX_SKEW_MS) return "두 폰의 시계가 2분 넘게 다릅니다";
+        // 상태 보기는 다시 보내져도 해가 없다 — 네트워크가 요청을 한 번 더 보낸 걸 공격으로 오해해
+        // 상대 침대가 목록에서 깜빡 사라지지 않게, 재사용 검사는 침대를 바꾸는 요청에만
+        if (path.startsWith("/state")) return null;
         synchronized (seenSigs) {
             for (Iterator<Map.Entry<String, Long>> it = seenSigs.entrySet().iterator(); it.hasNext(); )
                 if (now - it.next().getValue() > 2 * HomeKey.MAX_SKEW_MS) it.remove();
@@ -145,7 +148,7 @@ public class ApiServer {
             if (!App.uiVisible)
                 return "{\"ok\":false,\"msg\":\"상대 폰에서 마베드 앱을 열어둔 채로 다시 시도해주세요\"}";
             App.PairReq r = App.pairAsk(name, from);
-            if (r == null) return "{\"ok\":false,\"msg\":\"상대 폰이 다른 짝짓기 요청을 처리하는 중입니다\"}";
+            if (r == null) return "{\"ok\":false,\"msg\":\"상대 폰도 지금 짝짓기를 요청하는 중이거나 다른 요청을 처리하는 중입니다. 한쪽에서만 눌러주세요\"}";
             boolean ok;
             try { ok = r.latch.await(60, java.util.concurrent.TimeUnit.SECONDS) && r.allowed; }
             finally { App.pairDone(r); }

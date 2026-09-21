@@ -17,6 +17,7 @@ public class LanPeers {
         public String home = "";   // 그 폰의 집 열쇠 표식 (없으면 "" · 옛 버전이면 null)
         public long seen;          // 마지막으로 소식을 들은 때 (알림 신호 또는 상태 응답)
         int fails;                 // 연달아 상태 응답이 없었던 횟수
+        String authMsg = "";       // 마지막으로 받은 거절 이유 (같은 이유를 기록에 반복해 남기지 않게)
         public final List<RemoteBed> beds = new ArrayList<>();
         /** 옛 버전(5.8.0 이하) 폰인가 — 짝짓기를 못 한다 */
         public boolean old() { return home == null; }
@@ -194,11 +195,14 @@ public class LanPeers {
                 String json = http(signedUrl(p.ip, "/state"), 2500);
                 JSONObject o = new JSONObject(json);
                 if (o.has("auth") && !o.optBoolean("auth", true)) {
-                    // 열쇠가 안 맞는다 (상대가 짝을 풀었거나 다른 폰과 새로 짝지었다)
+                    // 열쇠가 안 맞는다 (상대가 짝을 풀었거나, 두 폰 시계가 크게 다르다) — 이유가 바뀔 때만 기록
+                    String why = o.optString("msg", "");
+                    if (!why.equals(p.authMsg)) { p.authMsg = why; App.addLog("짝", p.phone + " 가 거절 · " + why); }
                     synchronized (p.beds) { p.beds.clear(); }
                     synchronized (peers) { p.fails++; }
                     continue;
                 }
+                p.authMsg = "";
                 p.phone = o.optString("phone", p.phone);
                 JSONArray a = o.optJSONArray("beds");
                 List<RemoteBed> fresh = new ArrayList<>();
@@ -257,19 +261,25 @@ public class LanPeers {
     /** 짝짓기 요청 — 상대 폰 화면에 '허용'이 뜨고, 허용하면 집 열쇠를 받아 이 폰에 저장한다.
      *  사람이 누를 때까지 최대 1분 기다린다. 돌려주는 값: null = 성공, 아니면 실패 이유 */
     public String pair(String ip) {
+        // 내가 요청하는 동안에는 남의 요청을 받지 않는다 — 두 폰이 동시에 서로에게 요청해 둘 다 허용하면
+        // 각자 만든 열쇠를 맞바꿔 가져서 짝이 영영 안 맞는 문제가 있었다
+        if (!App.pairOutStart()) return "이 폰이 다른 짝짓기 요청을 처리하는 중입니다. 잠시 뒤 다시 해주세요";
         try {
-            String r = http("http://" + ip + ":" + ApiServer.PORT + "/pair?name=" + enc(myName), 70000);
+            // 닿는지는 4초 안에 판단하고, 상대가 '허용'을 누를 때까지는 최대 70초 기다린다
+            String r = http("http://" + ip + ":" + ApiServer.PORT + "/pair?name=" + enc(myName), 4000, 70000);
             JSONObject o = new JSONObject(r);
-            if (!o.optBoolean("ok", false)) return o.optString("msg", "상대 폰이 옛 버전이거나 응답이 없습니다");
+            if (!o.optBoolean("ok", false)) return o.optString("msg", "상대 폰이 옛 버전입니다. 상대 폰도 새 버전으로 올려주세요");
             String key = o.optString("key", "");
             if (key.length() < 32 || app == null) return "열쇠를 받지 못했습니다";
             HomeKey.set(app, key);
             App.addLog("짝", o.optString("phone", ip) + " 와 짝지었습니다");
             return null;
-        } catch (FileNotFoundException e) {
-            return "상대 폰이 옛 버전입니다. 상대 폰도 새 버전으로 올려주세요";
+        } catch (java.net.SocketTimeoutException e) {
+            return "상대 폰에 닿지 않거나 1분 안에 '허용'을 누르지 않았습니다";
         } catch (Exception e) {
-            return "상대 폰에 닿지 않습니다 (" + e.getClass().getSimpleName() + ")";
+            return "상대 폰에 닿지 않습니다. 같은 와이파이인지, 앱이 열려 있는지 확인해주세요";
+        } finally {
+            App.pairOutEnd();
         }
     }
 
@@ -277,9 +287,11 @@ public class LanPeers {
         try { return URLEncoder.encode(s, "UTF-8"); } catch (Exception e) { return ""; }
     }
 
-    private static String http(String url, int timeout) throws IOException {
+    private static String http(String url, int timeout) throws IOException { return http(url, timeout, timeout); }
+
+    private static String http(String url, int connectMs, int readMs) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(timeout); c.setReadTimeout(timeout);
+        c.setConnectTimeout(connectMs); c.setReadTimeout(readMs);
         try {
             InputStream in = c.getInputStream();
             ByteArrayOutputStream bo = new ByteArrayOutputStream();

@@ -2017,8 +2017,27 @@ public class MainActivity extends Activity {
             .setNegativeButton("취소", null).show();
     }
 
-    /** 상대 폰에 짝짓기를 요청하고, 상대가 '허용'을 누를 때까지 기다린다 (최대 1분) */
+    /** 상대 폰에 짝짓기를 요청하고, 상대가 '허용'을 누를 때까지 기다린다 (최대 1분).
+     *  요청한 쪽이 상대의 열쇠를 받아 쓰므로, 이 폰이 이미 다른 짝(다른 열쇠)이 있으면 그 짝은 풀린다 — 먼저 묻는다 */
     private void doPair(final String ip, final String name) {
+        String otherHome = null;
+        for (LanPeers.Peer p : lan.allPeers()) if (p.ip.equals(ip)) otherHome = p.home;
+        boolean mine = HomeKey.has(this);
+        String myHome = HomeKey.id(HomeKey.get(this));
+        if (mine && otherHome != null && !otherHome.isEmpty() && !otherHome.equals(myHome)) {
+            new android.app.AlertDialog.Builder(this)
+                .setTitle("이미 다른 짝이 있습니다")
+                .setMessage("이 폰과 '" + name + "' 폰은 서로 다른 폰과 짝을 지은 상태입니다.\n"
+                        + "계속하면 이 폰은 '" + name + "' 쪽 짝으로 옮겨가고, 지금 짝과는 풀립니다.")
+                .setPositiveButton("계속", new android.content.DialogInterface.OnClickListener() {
+                    public void onClick(android.content.DialogInterface d, int w) { doPairNow(ip, name); } })
+                .setNegativeButton("취소", null).show();
+            return;
+        }
+        doPairNow(ip, name);
+    }
+
+    private void doPairNow(final String ip, final String name) {
         final android.app.AlertDialog wait = new android.app.AlertDialog.Builder(this)
             .setTitle("짝짓기")
             .setMessage("'" + name + "' 폰에 '짝짓기 요청' 창이 떴습니다.\n그 폰에서 [허용]을 눌러주세요.\n\n(최대 1분 기다립니다)")

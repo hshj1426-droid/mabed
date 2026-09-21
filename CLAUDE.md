@@ -74,6 +74,8 @@ $BT/aapt2 dump xmltree --file AndroidManifest.xml build/mabed-X.apk | grep -A1 "
 unzip -p build/mabed-X.apk classes.dex | strings | grep kr/mabed/control   # 새 클래스 들어갔는지
 ```
 
+9099 짝짓기·도장을 고쳤다면 `test/pairing/run.sh <android.jar> <org.json.jar>` 를 돌릴 것 (35개 확인, PC 에서 실제 코드로). org.json 진짜 jar 는 Android Studio 의 plugins/grazie/lib/org.json-json.jar 에 있다.
+
 화면 모양은 에뮬레이터 없이 확인할 수 없다. 레이아웃을 크게 바꿨다면 사용자에게 스크린샷을 부탁한다.
 
 ## 배포
