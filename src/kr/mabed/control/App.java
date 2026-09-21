@@ -125,7 +125,21 @@ public class App {
         if (r != null) r.run();
     }
 
+    /** 침대가 접속하며 보낸 것 중 뜻을 모르는 것 (동기화 요청·기기정보·모르는 명령) — 기록이 금방 밀려나도 남게 따로 모은다 */
+    private static final java.util.LinkedHashSet<String> BED_HELLO = new java.util.LinkedHashSet<>();
+
+    public static List<String> bedHello() {
+        synchronized (BED_HELLO) { return new ArrayList<>(BED_HELLO); }
+    }
+
     public static void addLog(String kind, String text) {
+        if (kind.equals("동기화") || kind.equals("기기정보") || kind.startsWith("명령")
+                || (kind.equals("받음") && !text.startsWith("V"))) {
+            synchronized (BED_HELLO) {
+                BED_HELLO.add(kind + " · " + text);
+                while (BED_HELLO.size() > 40) BED_HELLO.remove(BED_HELLO.iterator().next());
+            }
+        }
         String t = new java.text.SimpleDateFormat("HH:mm:ss",
                 java.util.Locale.KOREA).format(new java.util.Date());
         synchronized (LOG) {

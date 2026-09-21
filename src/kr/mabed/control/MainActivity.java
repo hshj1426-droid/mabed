@@ -1675,6 +1675,11 @@ public class MainActivity extends Activity {
             sb.append("이웃 ").append(p.phone).append("  ").append(p.ip)
               .append(lan.paired(p) ? "  짝 · 침대 " + p.beds.size() + "대" : (p.old() ? "  옛 버전" : "  짝 아님"))
               .append('\n');
+        // 침대가 접속하며 보낸 것 — 원래 앱의 알람·LED 핀을 알아내는 단서 (캡처해서 보내주면 된다)
+        List<String> hello = App.bedHello();
+        sb.append("\n[침대가 접속하며 보낸 것]\n");
+        if (hello.isEmpty()) sb.append("  아직 없음 — 아래 '침대 다시 연결'을 누르고 10초 뒤 다시 열어보세요\n");
+        for (String h : hello) sb.append("  ").append(h).append('\n');
         sb.append('\n');
         for (String[] x : App.log()) sb.append(x[0]).append("  ").append(x[1]).append("  ").append(x[2]).append('\n');
 
@@ -1687,7 +1692,20 @@ public class MainActivity extends Activity {
         new android.app.AlertDialog.Builder(this)
             .setTitle("연결 기록")
             .setView(sv)
-            .setPositiveButton("닫기", null).show();
+            .setPositiveButton("닫기", null)
+            .setNeutralButton("침대 다시 연결", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) { reconnectBeds(); } })
+            .show();
+    }
+
+    /** 침대 서버를 잠깐 껐다 켠다 — 침대가 다시 접속하면서 처음 보내는 것들을 기록에 남기려고 */
+    private void reconnectBeds() {
+        toast("침대 연결을 다시 합니다. 10초쯤 뒤 연결 기록을 다시 열어보세요");
+        bg(new Runnable(){ public void run(){
+            App.server().stop();
+            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+            App.server().start();
+        }});
     }
 
     // ── 주기 ───────────────────────────────────────────

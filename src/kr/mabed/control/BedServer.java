@@ -179,7 +179,10 @@ public class BedServer {
                         break;
                     }
                     case HW_SYNC:
-                        log("동기화", "침대가 현재 상태를 물어봄");
+                        // 기록만 늘렸다 (응답은 예전과 똑같다). 내용에 침대가 달라는 핀 번호가 있으면
+                        // 원래 앱의 알람·타이머·LED 핀을 알아낼 수 있다 (5.9.3)
+                        log("동기화", len > 0 ? "침대가 값을 달라고 함 · " + join(split(body))
+                                             : "침대가 저장된 값을 모두 달라고 함 (내용 없음)");
                         synchronized (out) { out.write(head(RESPONSE, msgId, 200)); out.flush(); }
                         break;
                     case RESPONSE:
