@@ -23,10 +23,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # 기본값은 더 이상 없는 'tools' 패키지를 받으려다 실패한다 — 필요한 두 개만 받는다
       - uses: android-actions/setup-android@v3
-
-      - name: SDK 준비
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0'
 
       - name: 서명 키 복원
         run: |
