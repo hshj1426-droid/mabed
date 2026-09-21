@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <!-- 알림줄 아이콘: 등판을 세운 침대 옆모습 (흰색 한 가지 색) -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M3,15h18v2.5h-18z M3.2,15.2l3.6,-7.4l2.2,1.1l-3.6,7.4z M4,17.5h1.6v2.5h-1.6z M18.4,17.5h1.6v2.5h-1.6z"/>
+</vector>

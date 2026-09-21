@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="kr.mabed.control"
-    android:versionCode="31" android:versionName="5.3.0">
+    android:versionCode="32" android:versionName="5.4.0">
 
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -23,7 +23,8 @@
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.DeviceDefault.DayNight">
         <activity android:name=".MainActivity" android:exported="true"
-                  android:windowSoftInputMode="adjustResize">
+                  android:windowSoftInputMode="adjustResize"
+                  android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>

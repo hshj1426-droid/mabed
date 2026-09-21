@@ -35,12 +35,13 @@
 
 ```
 src/kr/mabed/control/
-  MainActivity.java  화면 전체 — 메인 / 설정 마법사 / 개발자 모드 / 넘겨주기
+  MainActivity.java  화면 전체 — 메인 / 설정 화면 / 설정 마법사 / 넘겨주기 · 뒤로가기(onBackPressed)
   BedServer.java     Blynk Legacy TCP 서버 (포트 8080) — 손대지 말 것
+  App.java           서버·이웃 창구(ApiServer)·이웃 찾기(LanPeers)를 앱 전체에 하나씩. 화면이 새로 떠도 새로 만들지 않는다 (startNet)
   ServerService.java 포그라운드 서비스 + WakeLock + WifiLock
   BootReceiver.java  재부팅 후 서버 되살리기 (serverOn 이고 침대가 있을 때만)
   LanPeers.java      같은 와이파이의 다른 폰 찾기 (UDP 9098, MulticastLock)
-  ApiServer.java     다른 폰이 보내는 명령 받기 (HTTP 9099: /state, /cmd) — 암호 없음
+  ApiServer.java     다른 폰이 보내는 명령 받기 (HTTP 9099: /state, /cmd, /rename) — 암호 없음
   Beds.java          등록 침대 목록 (prefs "beds" JSON)
   Net.java           와이파이 주소, 침대 AP 통신, isLan()
   Updates.java       깃허브 릴리스로 새 버전 확인 (REPO = hshj1426-droid/mabed)

@@ -35,6 +35,7 @@ public class Beds {
             } catch (Exception ignored) {}
         }
         p.edit().putString("beds", a.toString()).apply();
+        App.bedsRev++;
     }
 
     public static String newToken() {

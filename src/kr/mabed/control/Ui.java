@@ -198,6 +198,21 @@ public class Ui {
         return b;
     }
 
+    /** 아이콘만 있는 둥근 버튼 (뒤로 ←, 설정 톱니) — 크기는 부르는 쪽에서 rawDp(44) 정도로 */
+    public ImageView iconBtn(int glyph, int color, String desc, final Runnable r) {
+        ImageView v = new ImageView(a);
+        v.setImageDrawable(new Glyph(glyph, color, dp(22)));
+        v.setScaleType(ImageView.ScaleType.CENTER);
+        v.setContentDescription(desc);   // 화면 읽어주기(TalkBack)용 이름
+        v.setBackground(new RippleDrawable(
+                ColorStateList.valueOf(dark ? 0x33FFFFFF : 0x22000000), null, oval(0xFFFFFFFF, 0)));
+        v.setClickable(true);
+        if (r != null) v.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View x) { r.run(); }
+        });
+        return v;
+    }
+
     /** 메뉴 사이 가는 선 */
     public View hair() {
         View v = new View(a);

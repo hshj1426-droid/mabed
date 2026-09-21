@@ -56,7 +56,7 @@ public class ServerService extends Service {
                 : new Notification.Builder(this);
         Notification n = b.setContentTitle("마베드 서버 켜짐")
                 .setContentText("침대를 기다리는 중입니다")
-                .setSmallIcon(android.R.drawable.ic_lock_idle_low_battery)
+                .setSmallIcon(R.drawable.ic_stat)   // 예전엔 '배터리 부족' 아이콘이라 오해를 샀다
                 .setContentIntent(pi)
                 .setOngoing(true)
                 .build();
@@ -69,6 +69,8 @@ public class ServerService extends Service {
             startForeground(1, n);
         }
         App.server().start();
+        // 재부팅 뒤 화면을 안 열어도 다른 폰이 이 폰의 침대를 조작할 수 있게
+        try { App.startNet(this); } catch (Throwable ignored) {}
         getSharedPreferences("mabed", MODE_PRIVATE).edit().putBoolean("serverOn", true).apply();
         return START_STICKY;
     }

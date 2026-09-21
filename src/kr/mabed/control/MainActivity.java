@@ -17,12 +17,20 @@ public class MainActivity extends Activity {
     private Ui u;
 
     private FrameLayout root;
-    private View mainPane, devPane, wizPane;
+    private View mainPane, setPane, wizPane;
+
+    /** 지금 보이는 화면 */
+    private static final int SCR_MAIN = 0, SCR_SETTINGS = 1, SCR_WIZARD = 2;
+    private int screen = SCR_MAIN;
 
     private List<Beds.Bed> beds = new ArrayList<>();
-    private final LanPeers lan = new LanPeers();
-    private ApiServer api;
+    private int seenRev = -1;
+    private LanPeers lan;
+    /** 다른 폰의 침대 — 내 목록에 있는 침대와 겹치는 것은 뺀다 */
     private List<LanPeers.RemoteBed> remotes = new ArrayList<>();
+    /** 겹치는 것까지 포함한 전체 (넘겨준 침대의 행방·이름 찾기용) */
+    private List<LanPeers.RemoteBed> allRemotes = new ArrayList<>();
+    private String remoteSig = "";
     private boolean selRemote = false;
     private int sel = 0;
 
@@ -31,19 +39,34 @@ public class MainActivity extends Activity {
     private TextView statusDot, angleText, slotText, lightState, speakerState;
     private TextView warnView;
     private View warnCard;
+    private TextView noticeView;
+    private View noticeCard;
+    private Button noticeBtn;
+    private Runnable noticeAction;
     private TextView headVal, legVal, tableVal;
     private View stopBtn;
-    private Button tableToggle;
     private View tableRow;
-    private View battRow, battHair;
-    private final List<View> ownerRows = new ArrayList<>();
     private TextView updView;
     private View updCard;
     private Updates.Info pending;
     private LinearLayout tabRow;
     private final Map<String, Slider> bars = new LinkedHashMap<>();
-    private final Map<String, Integer> targets = new LinkedHashMap<>();
-    private boolean dragging = false;
+    private final List<Object[]> poses = new ArrayList<>();   // {BedView 아이콘, 숫자 글자, 상체값, 다리값}
+
+    /** 보낸 목표 — 어디서(from) 어디로(to) 가는 중인지 */
+    private static class Tgt {
+        final int from, to; final long at;
+        Tgt(int f, int t, long a) { from = f; to = t; at = a; }
+    }
+    private final Map<String, Tgt> targets = new LinkedHashMap<>();
+    private String dragPin = null;          // 지금 손가락으로 끌고 있는 슬라이더
+
+    /** 무드등·스피커처럼 침대가 값을 잘 안 알려주는 핀은 마지막으로 보낸 값을 기억해둔다 */
+    private final Map<String, Integer> sentVal = new HashMap<>();
+    private final Map<String, Long> sentAt = new HashMap<>();
+
+    // 설정
+    private LinearLayout setBox;
 
     // 마법사
     private LinearLayout wizBox;
@@ -56,22 +79,13 @@ public class MainActivity extends Activity {
     private LinearLayout wizScan;
     private TextView wizMsg;
 
-    // 개발자
-    private TextView addrView, logView, finderView, pinView;
-    private EditText pinIn, valIn, stopPinIn;
-    private final List<Integer> pool = new ArrayList<>();
-    private final List<Integer> trying = new ArrayList<>();
-    private static final int[] CANDIDATES = {
-        12,10,16,17,18,19,20,9,7,6,5,4,3,2,1,0,21,22,23,24,25,26,27,28,29,30,
-        32,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,53,54,55,56,
-        57,58,59,60,62,63 };
-
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         prefs = getSharedPreferences("mabed", MODE_PRIVATE);
         u = new Ui(this);
         beds = Beds.load(prefs);
         migrateOld();
+        seenRev = App.bedsRev;
         sel = Math.min(prefs.getInt("sel", 0), Math.max(0, beds.size() - 1));
 
         root = new FrameLayout(this);
@@ -87,14 +101,9 @@ public class MainActivity extends Activity {
             ui.post(new Runnable() { public void run() { refresh(); } }); } });
         if (!App.server().isRunning()) startServer();
 
-        String id = prefs.getString("phoneId", null);
-        if (id == null) { id = Beds.newToken().substring(0, 8); prefs.edit().putString("phoneId", id).apply(); }
-        api = new ApiServer(new ApiServer.Host() {
-            public List<Beds.Bed> beds() { return beds; }
-            public String phoneName() { return prefs.getString("phoneName", android.os.Build.MODEL); }
-        });
-        api.start();
-        lan.start(this, prefs.getString("phoneName", android.os.Build.MODEL), id);
+        // 이웃 폰 창구는 앱 전체에 하나만 — 화면을 닫았다 열어도 새로 만들지 않는다
+        App.startNet(this);
+        lan = App.lan();
 
         rebuild();
         startTicking();
@@ -123,17 +132,23 @@ public class MainActivity extends Activity {
         startTicking();
         long last = prefs.getLong("updCheckedAt", 0);
         if (System.currentTimeMillis() - last > 12L * 60 * 60 * 1000) checkUpdate(false);
-        // 배터리 제한을 푼 뒤 돌아온 경우 메뉴에서 그 줄을 치운다
-        if (battRow != null) {
-            int vis = battOk() ? View.GONE : View.VISIBLE;
-            battRow.setVisibility(vis);
-            if (battHair != null) battHair.setVisibility(vis);
-        }
+        // 배터리 제한을 푼 뒤 돌아온 경우 설정 화면의 그 줄을 치운다
+        if (screen == SCR_SETTINGS) renderSettings();
     }
 
     @Override protected void onPause() {
         super.onPause();
         stopTicking();   // 서버와 서비스는 계속 돌고, 화면 갱신만 멈춘다
+    }
+
+    // ── 뒤로가기 ───────────────────────────────────────
+    /** 폰의 뒤로 버튼. 예전엔 처리가 없어서 누르면 앱이 그냥 꺼졌다 */
+    @SuppressWarnings("deprecation")
+    @Override public void onBackPressed() {
+        if (screen == SCR_SETTINGS) { closeSettings(); return; }
+        if (screen == SCR_WIZARD) { wizBack(); return; }
+        // 메인에서는 앱을 끄지 않고 뒤로 보낸다 (서버는 계속 돈다)
+        moveTaskToBack(true);
     }
 
     /** 배터리 최적화 예외를 이미 받았는지 */
@@ -190,34 +205,53 @@ public class MainActivity extends Activity {
     /** 접속은 했는데 목록에 없는 침대를 찾는다 */
     private String orphanToken() {
         for (BedServer.Dev d : App.server().devices()) {
-            boolean known = false;
-            for (Beds.Bed b : beds) if (b.token.equals(d.token)) known = true;
-            if (!known) return d.token;
+            if (!ownToken(d.token)) return d.token;
         }
+        return null;
+    }
+
+    private boolean ownToken(String token) {
+        for (Beds.Bed b : beds) if (b.token.equals(token)) return true;
+        return false;
+    }
+
+    /** 다른 폰이 알고 있는 이 침대의 이름 (넘겨받은 침대에 원래 이름을 붙여주려고) */
+    private String knownName(String token) {
+        for (LanPeers.RemoteBed r : allRemotes) if (r.token.equals(token)) return r.name;
         return null;
     }
 
     private void rebuild() {
         root.removeAllViews();
         bars.clear();
-        if (beds.isEmpty() && !remotes.isEmpty()) { selRemote = true; sel = 0; }
+        poses.clear();
+        setPane = null;
+        fixSel();
         if (beds.isEmpty() && remotes.isEmpty()) {
             step = 0;
+            screen = SCR_WIZARD;
             wizPane = buildWizard();
             root.addView(wizPane);
+            mainPane = null;
         } else {
+            screen = SCR_MAIN;
             mainPane = buildMain();
-            devPane = buildDev();
-            devPane.setVisibility(View.GONE);
             root.addView(mainPane);
-            root.addView(devPane);
+            wizBox = null;
         }
         refresh();
     }
 
+    /** 고른 침대 번호가 목록 범위를 벗어나지 않게 */
+    private void fixSel() {
+        if (beds.isEmpty() && !remotes.isEmpty()) selRemote = true;
+        if (selRemote && remotes.isEmpty()) { selRemote = false; sel = 0; }
+        if (selRemote) { if (sel >= remotes.size()) sel = 0; }
+        else if (sel >= beds.size()) sel = 0;
+    }
+
     private Beds.Bed cur() {
-        if (beds.isEmpty()) return null;
-        if (selRemote || sel >= beds.size()) return beds.get(0);
+        if (selRemote || beds.isEmpty() || sel >= beds.size()) return null;
         return beds.get(sel);
     }
 
@@ -240,34 +274,72 @@ public class MainActivity extends Activity {
         return b == null ? "" : b.name;
     }
 
+    /** 제목 + 왼쪽 뒤로 버튼이 있는 윗줄 */
+    private LinearLayout topBar(String title, Runnable back) {
+        LinearLayout hd = new LinearLayout(this);
+        hd.setOrientation(LinearLayout.HORIZONTAL);
+        hd.setGravity(Gravity.CENTER_VERTICAL);
+        if (back != null) {
+            ImageView bk = u.iconBtn(Glyph.BACK, u.fg, "뒤로", back);
+            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(u.rawDp(44), u.rawDp(44));
+            bp.rightMargin = u.dp(4);
+            hd.addView(bk, bp);
+        }
+        hd.addView(u.text(title, 22, u.fg, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        return hd;
+    }
+
     // ── 설정 마법사 ────────────────────────────────────
     private View buildWizard() {
         ScrollView sv = new ScrollView(this);
         sv.setBackgroundColor(u.bg);
         wizBox = u.col();
-        wizBox.setPadding(u.dp(20), u.dp(24), u.dp(20), u.dp(28));
+        wizBox.setPadding(u.dp(14), u.dp(14), u.dp(20), u.dp(28));
         sv.addView(wizBox);
         renderStep();
         return sv;
     }
 
+    /** 마법사에서 뒤로 갈 곳이 있는가 */
+    private boolean wizCanBack() {
+        return step > 0 || wizHandover || !beds.isEmpty() || !remotes.isEmpty();
+    }
+
+    /** 마법사 한 단계 뒤로 — 첫 단계면 마법사를 닫는다 */
+    private void wizBack() {
+        if (wizHandover) {
+            if (step == 5) { handoverDone(); return; }       // 이미 침대에 넣었다 — 마무리
+            if (step <= 1) { wizHandover = false; rebuild(); toast("넘기기를 취소했습니다"); return; }
+            step--; renderStep(); return;
+        }
+        if (step == 5) { wizFinish(); return; }              // 침대 설정은 이미 끝났다 — 목록에 넣고 닫는다
+        if (step > 0) { step--; renderStep(); return; }
+        if (!beds.isEmpty() || !remotes.isEmpty()) { rebuild(); return; }
+        moveTaskToBack(true);                                // 침대가 하나도 없으면 앱만 뒤로
+    }
+
     private void renderStep() {
         wizBox.removeAllViews();
-        wizBox.addView(u.text(wizHandover ? "침대 넘겨주기" : "침대 연결하기", 22, u.fg, true));
+        wizBox.addView(topBar(wizHandover ? "침대 넘겨주기" : "침대 연결하기",
+                wizCanBack() ? new Runnable(){ public void run(){ wizBack(); }} : null));
         TextView sub = u.text(wizHandover
                 ? (wizName + " → " + (wizTargetPhone.isEmpty() ? wizHost : wizTargetPhone))
                 : ((step + 1) + " / 6 단계"), 12.5f, wizHandover ? u.accent : u.muted, true);
-        sub.setPadding(0, u.dp(4), 0, u.dp(18));
+        sub.setPadding(u.dp(6), u.dp(4), 0, u.dp(18));
         wizBox.addView(sub);
+        LinearLayout body = u.col();
+        body.setPadding(u.dp(6), 0, 0, 0);
+        wizBox.addView(body);
+        LinearLayout box = body;
 
         switch (step) {
             case 0: {
-                wizBox.addView(u.text("먼저 이 침대를 뭐라고 부를지 정해주세요.", 15, u.fg, false));
-                wizBox.addView(spacer(14));
+                box.addView(u.text("먼저 이 침대를 뭐라고 부를지 정해주세요.", 15, u.fg, false));
+                box.addView(spacer(14));
                 wizNameIn = u.input("예: 내 침대", beds.isEmpty() ? "내 침대" : "", false);
-                wizBox.addView(wizNameIn);
-                wizBox.addView(u.note("침대가 두 대 이상이면 이 이름으로 구분합니다."));
-                wizBox.addView(spacer(8));
+                box.addView(wizNameIn);
+                box.addView(u.note("침대가 두 대 이상이면 이 이름으로 구분합니다."));
+                box.addView(spacer(8));
                 String ip = Net.myWifiIp(this);
                 boolean okWifi = Net.isLan(ip) && !ip.startsWith("192.168.4.");
                 if (okWifi) {
@@ -276,55 +348,57 @@ public class MainActivity extends Activity {
                     if (ss != null) { wizSsid = ss; prefs.edit().putString("homeSsid", ss).apply(); }
                     prefs.edit().putString("homeIp", ip).apply();
                     String saved = prefs.getString("homeSsid", "");
-                    wizBox.addView(u.card(u.text("지금 집 와이파이에 연결돼 있습니다.\n"
+                    box.addView(u.card(u.text("지금 집 와이파이에 연결돼 있습니다.\n"
                             + "이 폰 주소 : " + ip
                             + (saved.isEmpty() ? "" : "\n와이파이 : " + saved), 13, u.fg, false), 13));
                     if (saved.contains("5G") || saved.contains("5g")) {
-                        wizBox.addView(u.card(u.text(
+                        box.addView(u.card(u.text(
                             "이 폰은 지금 5GHz 와이파이에 붙어 있습니다.\n"
                             + "침대는 5GHz를 못 씁니다. 다음 단계에서 5G가 안 붙은 쪽을 고르세요.\n"
                             + "두 와이파이가 같은 공유기라면 폰은 그대로 두셔도 됩니다.", 13, u.accent, false), 13));
                     }
                     if (saved.isEmpty()) {
-                        wizBox.addView(u.small("와이파이 이름 자동으로 가져오기", new Runnable(){ public void run(){
+                        box.addView(u.small("와이파이 이름 자동으로 가져오기", new Runnable(){ public void run(){
                             if (!hasLocationPerm()) askLocationPerm();
                             else {
                                 String s2 = currentSsid();
                                 if (s2 != null) { wizSsid = s2; prefs.edit().putString("homeSsid", s2).apply(); renderStep(); }
                                 else toast("위치 기능을 켜고 다시 눌러주세요");
                             } }}));
-                        wizBox.addView(u.note("안드로이드는 위치 권한이 있어야 와이파이 이름을 알려줍니다. 위치를 추적하지는 않습니다."));
+                        box.addView(u.note("안드로이드는 위치 권한이 있어야 와이파이 이름을 알려줍니다. 위치를 추적하지는 않습니다."));
                     }
                 } else {
-                    wizBox.addView(u.card(u.text("먼저 집 와이파이에 연결해주세요.\n연결한 뒤 이 화면으로 돌아오면 됩니다.", 13, u.danger, false), 13));
+                    box.addView(u.card(u.text("먼저 집 와이파이에 연결해주세요.\n연결한 뒤 이 화면으로 돌아오면 됩니다.", 13, u.danger, false), 13));
                 }
                 final String orphan = orphanToken();
                 if (orphan != null) {
-                    wizBox.addView(spacer(6));
-                    wizBox.addView(u.card(u.text(
+                    String known = knownName(orphan);
+                    if (known != null && beds.isEmpty()) wizNameIn.setText(known);
+                    box.addView(spacer(6));
+                    box.addView(u.card(u.text(
                         "이미 이 폰에 접속해 있는 침대가 있습니다.\n설정을 다시 할 필요 없이 바로 추가할 수 있습니다.",
                         13, u.ok, false), 13));
-                    wizBox.addView(u.btn("접속해 있는 침대 바로 추가", u.ok, 0xFFFFFFFF, 0, 15, 16,
+                    box.addView(u.btn("접속해 있는 침대 바로 추가", u.ok, 0xFFFFFFFF, 0, 15, 16,
                         new Runnable(){ public void run(){
                             String n = wizNameIn.getText().toString().trim();
                             wizName = n.isEmpty() ? "내 침대" : n;
                             wizToken = orphan;
                             wizFinish();
                         }}));
-                    wizBox.addView(spacer(10));
+                    box.addView(spacer(10));
                 }
-                if (!remotes.isEmpty()) {
-                    wizBox.addView(spacer(6));
-                    wizBox.addView(u.card(u.text(
+                if (!remotes.isEmpty() && beds.isEmpty()) {
+                    box.addView(spacer(6));
+                    box.addView(u.card(u.text(
                         "다른 폰이 가진 침대 " + remotes.size() + "대가 보입니다.\n"
                         + "내 침대를 등록하지 않아도 그 침대는 지금 바로 조작할 수 있습니다.",
                         13, u.ok, false), 13));
-                    wizBox.addView(u.btn("그 침대 조작하러 가기", u.ok, 0xFFFFFFFF, 0, 15, 16,
+                    box.addView(u.btn("그 침대 조작하러 가기", u.ok, 0xFFFFFFFF, 0, 15, 16,
                         new Runnable(){ public void run(){
                             selRemote = true; sel = 0; rebuild(); }}));
-                    wizBox.addView(spacer(10));
+                    box.addView(spacer(10));
                 }
-                wizBox.addView(u.btn("다음", okWifi ? u.accent : u.card, okWifi ? 0xFFFFFFFF : u.muted,
+                box.addView(u.btn("다음", okWifi ? u.accent : u.card, okWifi ? 0xFFFFFFFF : u.muted,
                         okWifi ? 0 : u.line, 16, 17, new Runnable() { public void run() {
                     String n = wizNameIn.getText().toString().trim();
                     if (n.isEmpty()) { toast("이름을 넣어주세요"); return; }
@@ -333,59 +407,61 @@ public class MainActivity extends Activity {
                     wizName = n; wizHost = ip2; wizToken = Beds.newToken();
                     step = 1; renderStep();
                 }}));
+                if (!beds.isEmpty() || !remotes.isEmpty())
+                    box.addView(u.small("취소", new Runnable(){ public void run(){ rebuild(); }}));
                 break;
             }
             case 1: {
-                wizBox.addView(u.text("침대를 설정 모드로 바꿔주세요.", 16, u.fg, true));
-                wizBox.addView(spacer(10));
-                wizBox.addView(u.card(u.text(
+                box.addView(u.text("침대를 설정 모드로 바꿔주세요.", 16, u.fg, true));
+                box.addView(spacer(10));
+                box.addView(u.card(u.text(
                     "1. 침대 밑 컨트롤 박스의 나사 4개를 풉니다\n\n" +
                     "2. 안에 꽂힌 작은 검은 기판에서 micro-USB 단자 오른쪽의 BOOT 버튼을 찾습니다\n\n" +
                     "3. 전원이 켜진 상태로 BOOT를 10초간 꾹 누릅니다\n\n" +
                     "4. 빨간 불이 느리게 깜빡이다 빠르게 깜빡이면 완료입니다", 14, u.fg, false), 15));
-                wizBox.addView(u.note("케이스 바깥이 아니라 안쪽 기판 위에 있습니다."));
-                wizBox.addView(u.btn("했습니다", u.accent, 0xFFFFFFFF, 0, 16, 17,
+                box.addView(u.note("케이스 바깥이 아니라 안쪽 기판 위에 있습니다."));
+                box.addView(u.btn("했습니다", u.accent, 0xFFFFFFFF, 0, 16, 17,
                         new Runnable(){ public void run(){ step = 2; renderStep(); }}));
-                if (!wizHandover) wizBox.addView(u.small("뒤로", new Runnable(){ public void run(){ step = 0; renderStep(); }}));
-                else wizBox.addView(u.small("넘기기 취소", new Runnable(){ public void run(){
+                if (!wizHandover) box.addView(u.small("뒤로", new Runnable(){ public void run(){ step = 0; renderStep(); }}));
+                else box.addView(u.small("넘기기 취소", new Runnable(){ public void run(){
                         wizHandover = false; rebuild(); }}));
                 break;
             }
             case 2: {
-                wizBox.addView(u.text("폰을 침대 와이파이에 연결해주세요.", 16, u.fg, true));
-                wizBox.addView(spacer(10));
-                wizBox.addView(u.card(u.text(
+                box.addView(u.text("폰을 침대 와이파이에 연결해주세요.", 16, u.fg, true));
+                box.addView(spacer(10));
+                box.addView(u.card(u.text(
                     "1. 폰 설정 → 와이파이\n\n" +
                     "2. birkits- 로 시작하는 이름을 찾아 연결합니다 (비밀번호 없음)\n\n" +
                     "3. \"인터넷이 안 된다\"고 나오면 이 네트워크 유지를 고릅니다\n\n" +
                     "4. 모바일 데이터를 꺼주세요  ← 이걸 안 하면 실패합니다", 14, u.fg, false), 15));
                 wizMsg = u.note(Net.onBedAp(this) ? "지금 침대 와이파이에 연결돼 있습니다." : "아직 연결되지 않았습니다.");
-                wizBox.addView(wizMsg);
-                wizBox.addView(u.btn("연결했습니다 · 침대 찾기", u.accent, 0xFFFFFFFF, 0, 16, 17,
+                box.addView(wizMsg);
+                box.addView(u.btn("연결했습니다 · 침대 찾기", u.accent, 0xFFFFFFFF, 0, 16, 17,
                         new Runnable(){ public void run(){ wizFind(); }}));
-                wizBox.addView(u.small("뒤로", new Runnable(){ public void run(){ step = 1; renderStep(); }}));
+                box.addView(u.small("뒤로", new Runnable(){ public void run(){ step = 1; renderStep(); }}));
                 break;
             }
             case 3: {
-                wizBox.addView(u.text("집 와이파이를 고르세요.", 16, u.fg, true));
+                box.addView(u.text("집 와이파이를 고르세요.", 16, u.fg, true));
                 final String autoSsid = prefs.getString("homeSsid", "");
                 if (!autoSsid.isEmpty()) {
-                    wizBox.addView(u.card(u.text("이 폰이 쓰던 와이파이 : " + autoSsid, 14, u.ok, true), 13));
-                    wizBox.addView(u.btn("이걸로 하기", u.ok, 0xFFFFFFFF, 0, 15, 15, new Runnable(){ public void run(){
-                        wizSsid = autoSsid; renderStep(); }}));
+                    box.addView(u.card(u.text("이 폰이 쓰던 와이파이 : " + autoSsid, 14, u.ok, true), 13));
+                    box.addView(u.btn("이걸로 하기", u.ok, 0xFFFFFFFF, 0, 15, 15, new Runnable(){ public void run(){
+                        wizSsid = autoSsid; keepPass(); renderStep(); }}));
                 }
-                wizBox.addView(u.note("아래는 침대가 자기 자리에서 잡히는 목록입니다. 신호가 셀수록 안정적입니다. 침대는 2.4GHz만 쓸 수 있어서 이름에 5G가 붙은 것은 여기에 아예 안 나옵니다."));
+                box.addView(u.note("아래는 침대가 자기 자리에서 잡히는 목록입니다. 신호가 셀수록 안정적입니다. 침대는 2.4GHz만 쓸 수 있어서 이름에 5G가 붙은 것은 여기에 아예 안 나옵니다."));
                 wizScan = u.col();
-                wizBox.addView(wizScan);
-                wizBox.addView(u.small("목록 다시 받기", new Runnable(){ public void run(){ wizScan(); }}));
-                wizBox.addView(spacer(6));
-                wizBox.addView(u.text("고른 와이파이 : " + (wizSsid.isEmpty() ? "아직 없음" : wizSsid), 14, u.fg, true));
+                box.addView(wizScan);
+                box.addView(u.small("목록 다시 받기", new Runnable(){ public void run(){ wizScan(); }}));
+                box.addView(spacer(6));
+                box.addView(u.text("고른 와이파이 : " + (wizSsid.isEmpty() ? "아직 없음" : wizSsid), 14, u.fg, true));
                 if (wizPass.isEmpty()) wizPass = prefs.getString("pass", "");
                 wizPassIn = u.input("와이파이 비밀번호", wizPass, false);
                 wizPassIn.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                         | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-                wizBox.addView(wizPassIn);
-                wizBox.addView(u.small("비밀번호 보이기 / 가리기", new Runnable(){ public void run(){
+                box.addView(wizPassIn);
+                box.addView(u.small("비밀번호 보이기 / 가리기", new Runnable(){ public void run(){
                     boolean hidden = (wizPassIn.getInputType()
                             & android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD) != 0;
                     wizPassIn.setInputType(android.text.InputType.TYPE_CLASS_TEXT
@@ -393,8 +469,8 @@ public class MainActivity extends Activity {
                                       : android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD));
                     wizPassIn.setSelection(wizPassIn.getText().length());
                 }}));
-                wizBox.addView(u.note("비밀번호는 안드로이드가 앱에게 알려주지 않습니다. 한 번만 넣어두면 다음부터는 기억합니다."));
-                wizBox.addView(u.btn("다음", u.accent, 0xFFFFFFFF, 0, 16, 17, new Runnable(){ public void run(){
+                box.addView(u.note("비밀번호는 안드로이드가 앱에게 알려주지 않습니다. 한 번만 넣어두면 다음부터는 기억합니다."));
+                box.addView(u.btn("다음", u.accent, 0xFFFFFFFF, 0, 16, 17, new Runnable(){ public void run(){
                     if (wizSsid.isEmpty()) { toast("와이파이를 골라주세요"); return; }
                     wizPass = wizPassIn.getText().toString();
                     prefs.edit().putString("pass", wizPass).putString("ssid", wizSsid).apply();
@@ -404,52 +480,57 @@ public class MainActivity extends Activity {
                 break;
             }
             case 4: {
-                wizBox.addView(u.text("이렇게 넣겠습니다.", 16, u.fg, true));
-                wizBox.addView(spacer(10));
-                wizBox.addView(u.card(u.text(
+                box.addView(u.text("이렇게 넣겠습니다.", 16, u.fg, true));
+                box.addView(spacer(10));
+                box.addView(u.card(u.text(
                     "이름        " + wizName + "\n" +
                     "와이파이     " + wizSsid + "\n" +
                     (wizHandover
                         ? "넘겨받을 폰   " + (wizTargetPhone.isEmpty() ? "" : wizTargetPhone + "  ") + wizHost
                         : "찾아올 주소   " + wizHost + " : " + BedServer.PORT), 14, u.fg, false), 15));
                 if (wizHandover) {
-                    wizBox.addView(u.card(u.text(
+                    box.addView(u.card(u.text(
                         "이제부터 이 침대는 저 폰을 찾아갑니다.\n"
                         + "이 폰 목록에서는 빠지지만, 같은 와이파이에 있으면\n"
                         + "↗ 표시가 붙은 채로 계속 조작할 수 있습니다.", 13, u.accent, false), 13));
                 }
                 wizMsg = u.note("");
-                wizBox.addView(wizMsg);
-                wizBox.addView(u.btn("침대에 넣기", u.accent, 0xFFFFFFFF, 0, 16, 17,
+                box.addView(wizMsg);
+                box.addView(u.btn("침대에 넣기", u.accent, 0xFFFFFFFF, 0, 16, 17,
                         new Runnable(){ public void run(){ wizSend(); }}));
-                wizBox.addView(u.small("뒤로", new Runnable(){ public void run(){ step = 3; renderStep(); }}));
+                box.addView(u.small("뒤로", new Runnable(){ public void run(){ step = 3; renderStep(); }}));
                 break;
             }
             case 5: {
                 if (wizHandover) {
-                    wizBox.addView(u.text("넘겼습니다.", 16, u.fg, true));
-                    wizBox.addView(spacer(10));
-                    wizBox.addView(u.card(u.text(
+                    box.addView(u.text("넘겼습니다.", 16, u.fg, true));
+                    box.addView(spacer(10));
+                    box.addView(u.card(u.text(
                         "1. 이 폰을 다시 집 와이파이(" + wizSsid + ")로 연결하세요.\n\n" +
                         "2. " + (wizTargetPhone.isEmpty() ? "받는 폰" : wizTargetPhone) + " 에서 앱을 여세요.\n\n" +
                         "3. \"접속해 있는 침대가 있습니다\" 안내가 뜨면 한 번 누르면 끝입니다.",
                         14, u.fg, false), 15));
-                    wizBox.addView(u.note("침대가 다시 시작하면서 저 폰을 찾아갑니다. 보통 10초 안에 붙습니다."));
-                    wizBox.addView(u.btn("끝내기", u.accent, 0xFFFFFFFF, 0, 16, 17,
+                    box.addView(u.note("침대가 다시 시작하면서 저 폰을 찾아갑니다. 보통 10초 안에 붙습니다."));
+                    box.addView(u.btn("끝내기", u.accent, 0xFFFFFFFF, 0, 16, 17,
                             new Runnable(){ public void run(){ handoverDone(); }}));
                     break;
                 }
-                wizBox.addView(u.text("마지막입니다.", 16, u.fg, true));
-                wizBox.addView(spacer(10));
-                wizBox.addView(u.card(u.text(
+                box.addView(u.text("마지막입니다.", 16, u.fg, true));
+                box.addView(spacer(10));
+                box.addView(u.card(u.text(
                     "폰을 다시 집 와이파이(" + wizSsid + ")로 연결해주세요.\n\n" +
                     "침대가 스스로 다시 시작하면서 찾아옵니다.\n보통 10초 안에 연결됩니다.", 14, u.fg, false), 15));
                 wizMsg = u.text("침대를 기다리는 중…", 15, u.muted, true);
-                wizBox.addView(u.card(wizMsg, 15));
-                wizBox.addView(u.small("건너뛰고 끝내기", new Runnable(){ public void run(){ wizFinish(); }}));
+                box.addView(u.card(wizMsg, 15));
+                box.addView(u.small("건너뛰고 끝내기", new Runnable(){ public void run(){ wizFinish(); }}));
                 break;
             }
         }
+    }
+
+    /** 와이파이를 고를 때 입력 중이던 비밀번호를 잃지 않게 */
+    private void keepPass() {
+        if (wizPassIn != null) wizPass = wizPassIn.getText().toString();
     }
 
     private View spacer(int h) {
@@ -464,25 +545,27 @@ public class MainActivity extends Activity {
             try {
                 final String s = Net.get(MainActivity.this, "http://192.168.4.1/board_info.json", 6000);
                 App.addLog("침대", "찾았습니다 · " + s.trim());
-                post(new Runnable(){ public void run(){ step = 3; renderStep(); }});
+                post(new Runnable(){ public void run(){ if (step == 2) { step = 3; renderStep(); } }});
             } catch (final Exception e) {
-                post(new Runnable(){ public void run(){ wizMsg.setText(
+                post(new Runnable(){ public void run(){ if (step == 2 && wizMsg != null) wizMsg.setText(
                     "침대를 못 찾았습니다.\n\n· birkits- 와이파이에 연결돼 있는지\n· 모바일 데이터를 껐는지\n· 침대가 설정 모드인지 확인해주세요\n\n(" + e.getMessage() + ")"); }});
             }
         }});
     }
 
     private void wizScan() {
-        wizScan.removeAllViews();
-        wizScan.addView(u.note("불러오는 중…"));
+        final LinearLayout target = wizScan;
+        target.removeAllViews();
+        target.addView(u.note("불러오는 중…"));
         bg(new Runnable(){ public void run(){
             try {
                 final String s = Net.get(MainActivity.this, "http://192.168.4.1/wifi_scan.json", 15000);
-                post(new Runnable(){ public void run(){ wizShowScan(s); }});
+                post(new Runnable(){ public void run(){ if (wizScan == target) wizShowScan(s); }});
             } catch (final Exception e) {
                 post(new Runnable(){ public void run(){
-                    wizScan.removeAllViews();
-                    wizScan.addView(u.note("목록을 못 받았습니다. 침대 와이파이에 연결돼 있는지 확인하고 다시 받아보세요."));
+                    if (wizScan != target) return;
+                    target.removeAllViews();
+                    target.addView(u.note("목록을 못 받았습니다. 침대 와이파이에 연결돼 있는지 확인하고 다시 받아보세요."));
                 }});
             }
         }});
@@ -507,7 +590,7 @@ public class MainActivity extends Activity {
                 int rssi = Integer.parseInt(r[1]);
                 String q = rssi >= -60 ? "신호 좋음" : rssi >= -70 ? "신호 보통" : "신호 약함";
                 wizScan.addView(u.small(ssid + "   ·   " + q, new Runnable(){ public void run(){
-                    wizSsid = ssid; renderStep(); }}));
+                    wizSsid = ssid; keepPass(); renderStep(); }}));
             }
         } catch (Exception e) { wizScan.addView(u.note("목록 해석 실패")); }
     }
@@ -525,14 +608,14 @@ public class MainActivity extends Activity {
                 App.addLog("설정", wizName + " · " + wizHost + " · " + wizSsid);
                 post(new Runnable(){ public void run(){ step = 5; renderStep(); if (!wizHandover) waitForBed(); }});
             } catch (final Exception e) {
-                post(new Runnable(){ public void run(){ wizMsg.setText("실패했습니다.\n" + e.getMessage()); }});
+                post(new Runnable(){ public void run(){ if (wizMsg != null) wizMsg.setText("실패했습니다.\n" + e.getMessage()); }});
             }
         }});
     }
 
     private void waitForBed() {
         ui.postDelayed(new Runnable() { public void run() {
-            if (step != 5) return;
+            if (step != 5 || screen != SCR_WIZARD) return;
             if (App.server().byToken(wizToken) != null) { wizFinish(); return; }
             if (wizMsg != null) wizMsg.setText("침대를 기다리는 중…  폰이 집 와이파이인지 확인해주세요.");
             ui.postDelayed(this, 1500);
@@ -542,11 +625,15 @@ public class MainActivity extends Activity {
     private void wizFinish() {
         // 안전장치 — 넘기기 중에는 절대 내 목록에 다시 넣지 않는다
         if (wizHandover) { handoverDone(); return; }
-        beds.add(new Beds.Bed(wizName, wizToken));
-        Beds.save(prefs, beds);
-        sel = beds.size() - 1;
+        if (!ownToken(wizToken)) {
+            beds.add(new Beds.Bed(wizName, wizToken));
+            Beds.save(prefs, beds);
+        }
+        for (int i = 0; i < beds.size(); i++) if (beds.get(i).token.equals(wizToken)) sel = i;
+        selRemote = false;
         prefs.edit().putInt("sel", sel).apply();
         toast(wizName + " 를 추가했습니다");
+        step = 0;
         rebuild();
     }
 
@@ -586,7 +673,7 @@ public class MainActivity extends Activity {
         // ── 헤더 ──
         LinearLayout top = u.row(0);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        top.setPadding(u.dp(18), u.dp(12), u.dp(18), u.dp(8));
+        top.setPadding(u.dp(18), u.dp(12), u.dp(8), u.dp(8));
         LinearLayout titleCol = u.col();
         TextView eyebrow = u.text("MA BED", 10f, u.muted, true);
         eyebrow.setLetterSpacing(0.24f);
@@ -598,6 +685,10 @@ public class MainActivity extends Activity {
         top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
         statusDot = u.pill("", u.muted, u.card, u.line);
         top.addView(statusDot, new LinearLayout.LayoutParams(-2, -2));
+        ImageView gear = u.iconBtn(Glyph.GEAR, u.fg, "설정", new Runnable(){ public void run(){ openSettings(); }});
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(u.rawDp(44), u.rawDp(44));
+        gp.leftMargin = u.dp(6);
+        top.addView(gear, gp);
         outer.addView(top);
 
         tabRow = u.row(0);
@@ -617,6 +708,21 @@ public class MainActivity extends Activity {
         warnCard = u.card(warnView, 14);
         warnCard.setVisibility(View.GONE);
         c.addView(warnCard);
+
+        // 접속했는데 목록에 없는 침대 · 다른 폰으로 옮겨간 침대 안내
+        LinearLayout nBox = u.col();
+        noticeView = u.text("", 13.5f, u.fg, true);
+        nBox.addView(noticeView);
+        noticeBtn = u.btn("", u.ok, 0xFFFFFFFF, 0, 14, 12,
+                new Runnable(){ public void run(){ if (noticeAction != null) noticeAction.run(); }});
+        LinearLayout.LayoutParams nbp = new LinearLayout.LayoutParams(-1, -2);
+        nbp.topMargin = u.dp(10);
+        nbp.bottomMargin = 0;
+        noticeBtn.setLayoutParams(nbp);
+        nBox.addView(noticeBtn);
+        noticeCard = u.card(nBox, 14);
+        noticeCard.setVisibility(View.GONE);
+        c.addView(noticeCard);
 
         LinearLayout updBox = u.col();
         updView = u.text("", 13.5f, u.fg, true);
@@ -669,10 +775,6 @@ public class MainActivity extends Activity {
         c.addView(stepper("다리", "13", 45));
         tableRow = stepper("테이블", "14", 850);
         c.addView(tableRow);
-        tableToggle = u.btn("", 0x00000000, u.muted, 0, 12.5f, 9,
-                new Runnable(){ public void run(){ toggleTable(); }});
-        c.addView(tableToggle);
-        applyTable();
 
         // ── 내 자세 ──
         c.addView(u.head("내 자세"));
@@ -708,41 +810,7 @@ public class MainActivity extends Activity {
         t1.addView(toggleCard(speakerState, "61", "스피커", Glyph.SPEAKER), u.w(1, 4));
         c.addView(t1);
         c.addView(u.note("스피커를 켠 뒤 폰 블루투스에서 XDADADZ 에 연결하면 소리가 납니다."));
-
-        // ── 침대 관리 ──
-        c.addView(u.head("침대 관리"));
-        LinearLayout mg = u.col();
-        mg.setBackground(u.box(u.card, u.line, 18));
-        mg.addView(linkRow("침대 추가하기", new Runnable(){ public void run(){ startWizard(); }}));
-        mg.addView(u.hair());
-        // 내 폰에 등록된 침대일 때만 보이는 줄들
-        ownerRows.clear();
-        View oh1 = u.hair();
-        View or1 = linkRow("이름 바꾸기", new Runnable(){ public void run(){ renameBed(); }});
-        mg.addView(or1); mg.addView(oh1);
-        ownerRows.add(or1); ownerRows.add(oh1);
-
-        mg.addView(linkRow("이 폰 이름 바꾸기", new Runnable(){ public void run(){ renamePhone(); }}));
-        mg.addView(u.hair());
-        mg.addView(linkRow("새 버전 확인", new Runnable(){ public void run(){ checkUpdate(true); }}));
-
-        View oh2 = u.hair();
-        View or2 = linkRow("이 침대를 다른 폰으로 넘기기", new Runnable(){ public void run(){ handoverPick(); }});
-        View oh3 = u.hair();
-        View or3 = linkRow("이 침대 목록에서 지우기", new Runnable(){ public void run(){ removeBed(); }});
-        mg.addView(oh2); mg.addView(or2); mg.addView(oh3); mg.addView(or3);
-        ownerRows.add(oh2); ownerRows.add(or2); ownerRows.add(oh3); ownerRows.add(or3);
-        applyOwnerRows();
-        mg.addView(u.hair());
-        mg.addView(linkRow("개발자 모드", new Runnable(){ public void run(){ showDev(true); }}));
-        battHair = u.hair();
-        mg.addView(battHair);
-        battRow = linkRow("배터리 제한 풀기", new Runnable(){ public void run(){ askBattery(); }});
-        mg.addView(battRow);
-        boolean bok = battOk();
-        battRow.setVisibility(bok ? View.GONE : View.VISIBLE);
-        battHair.setVisibility(bok ? View.GONE : View.VISIBLE);
-        c.addView(mg);
+        c.addView(u.note("이름 바꾸기 · 테이블 · 각도 맞추기 · 침대 추가는 오른쪽 위 톱니(설정)에 있습니다."));
         c.addView(spacer(6));
 
         // ── 정지 ──
@@ -766,23 +834,38 @@ public class MainActivity extends Activity {
         bar.addView(stop, new LinearLayout.LayoutParams(-1, -2));
         stopBtn = stop;
         outer.addView(bar);
+
+        applyBedSpecific();
         return outer;
     }
 
-    /** 오른쪽에 화살표가 있는 메뉴 한 줄 */
-    private View linkRow(String title, final Runnable r) {
+    /** 메뉴 한 줄 — 오른쪽에 현재 값, 누를 수 있으면 화살표 */
+    private View linkRow(String title, String value, final Runnable r) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(u.dp(16), u.dp(15), u.dp(14), u.dp(15));
         row.setMinimumHeight(u.rawDp(52));
         row.addView(u.text(title, 15, u.fg, false), new LinearLayout.LayoutParams(0, -2, 1f));
-        ImageView ch = new ImageView(this);
-        ch.setImageDrawable(new Glyph(Glyph.CHEVRON, u.muted, u.dp(16)));
-        row.addView(ch, new LinearLayout.LayoutParams(u.dp(16), u.dp(16)));
-        row.setClickable(true);
-        row.setOnClickListener(new View.OnClickListener(){
-            public void onClick(View v){ r.run(); }});
+        if (value != null && !value.isEmpty()) {
+            TextView vt = u.text(value, 13.5f, u.muted, false);
+            vt.setPadding(u.dp(8), 0, u.dp(6), 0);
+            vt.setSingleLine(true);
+            vt.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            vt.setMaxWidth((int)(u.screenW * 0.45f));
+            row.addView(vt, new LinearLayout.LayoutParams(-2, -2));
+        }
+        if (r != null) {
+            ImageView ch = new ImageView(this);
+            ch.setImageDrawable(new Glyph(Glyph.CHEVRON, u.muted, u.dp(16)));
+            row.addView(ch, new LinearLayout.LayoutParams(u.dp(16), u.dp(16)));
+            row.setClickable(true);
+            row.setBackground(new android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(u.dark ? 0x33FFFFFF : 0x22000000), null,
+                    new android.graphics.drawable.ColorDrawable(0xFFFFFFFF)));
+            row.setOnClickListener(new View.OnClickListener(){
+                public void onClick(View v){ r.run(); }});
+        }
         row.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
         return row;
     }
@@ -795,6 +878,7 @@ public class MainActivity extends Activity {
     }
 
     private void buildTabs() {
+        if (tabRow == null) return;
         tabRow.removeAllViews();
         int total = beds.size() + remotes.size();
         if (total < 2) { tabRow.setVisibility(View.GONE); return; }
@@ -807,7 +891,7 @@ public class MainActivity extends Activity {
                     on ? 0xFFFFFFFF : u.fg, on ? 0 : u.line, ts, 12,
                     new Runnable(){ public void run(){
                         sel = idx; selRemote = false; prefs.edit().putInt("sel", sel).apply();
-                        targets.clear(); buildTabs(); applyTable(); refresh(); }});
+                        switched(); }});
             tab(t);
             tabRow.addView(t, u.w(1, 3));
         }
@@ -818,10 +902,20 @@ public class MainActivity extends Activity {
                     on ? 0xFFFFFFFF : u.fg, on ? 0 : u.line, ts, 12,
                     new Runnable(){ public void run(){
                         sel = idx; selRemote = true;
-                        targets.clear(); buildTabs(); applyTable(); refresh(); }});
+                        switched(); }});
             tab(t);
             tabRow.addView(t, u.w(1, 3));
         }
+    }
+
+    /** 다른 침대로 바꿨을 때 */
+    private void switched() {
+        targets.clear();
+        dragPin = null;
+        buildTabs();
+        applyBedSpecific();
+        refresh();
+        askNow();
     }
 
     private View poseBtn(final String name, final int body, final int leg) {
@@ -834,13 +928,14 @@ public class MainActivity extends Activity {
         TextView t = u.text(name, 14f, u.fg, true);
         t.setGravity(Gravity.CENTER);
         t.setPadding(0, u.dp(7), 0, 0);
-        TextView s = u.text(body + "° · " + leg + "°", 11f, u.muted, false);
+        TextView s = u.text("", 11f, u.muted, false);
         s.setGravity(Gravity.CENTER);
         s.setPadding(0, u.dp(1), 0, 0);
         box.addView(t); box.addView(s);
+        poses.add(new Object[]{ ic, s, body, leg });
         u.ripple(box, u.card, u.line, 18);
         box.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) { preset(body, leg); toast(name); } });
+            public void onClick(View v) { if (preset(body, leg)) toast(name); } });
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
         p.bottomMargin = u.dp(8);
         box.setLayoutParams(p);
@@ -862,14 +957,25 @@ public class MainActivity extends Activity {
         u.ripple(box, u.card, u.line, 18);
         box.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
-                boolean on = pinValue("V" + pin, 0) > 0;
-                sendPin(pin, on ? "0" : "1");
-                toast(on ? "껐습니다" : "켰습니다");
+                boolean on = toggleOn(pin);
+                if (sendPin(pin, on ? "0" : "1")) { toast(on ? "껐습니다" : "켰습니다"); refresh(); }
             } });
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
         p.bottomMargin = u.dp(8);
         box.setLayoutParams(p);
         return box;
+    }
+
+    /** 켜짐/꺼짐 — 침대가 알려준 값이 내가 마지막으로 보낸 것보다 새것일 때만 그 값을 믿는다.
+     *  (예전엔 침대가 값을 안 알려주면 늘 '꺼짐'으로 보여서, 무드등을 끌 수가 없었다) */
+    private boolean toggleOn(String pin) {
+        String k = curToken() + "|" + pin;
+        int bedV = pinValue("V" + pin, -1);
+        long bedAt = pinAt("V" + pin);
+        Integer sv = sentVal.get(k);
+        Long sa = sentAt.get(k);
+        if (sv != null && sa != null && (bedV < 0 || sa > bedAt)) return sv > 0;
+        return bedV > 0;
     }
 
     private View stepper(final String name, final String pin, final int max) {
@@ -897,21 +1003,27 @@ public class MainActivity extends Activity {
 
         Button minus = u.circleBtn("−", new Runnable(){ public void run(){ step(pin, max, -1); }});
         Button plus  = u.circleBtn("+", new Runnable(){ public void run(){ step(pin, max, +1); }});
+        minus.setContentDescription(name + " 내리기");
+        plus.setContentDescription(name + " 올리기");
         LinearLayout.LayoutParams cb = new LinearLayout.LayoutParams(u.dp(46), u.dp(46));
 
         final Slider sb = new Slider(this, u.line, u.accent, u.card, u.accent);
         sb.setMax(max);
         sb.setListener(new Slider.Listener() {
             public void onSlide(int v, boolean done) {
-                vl.setText(v + (pin.equals("14") ? "" : "°") + (done ? "" : " →"));
                 if (!done) {
-                    if (!dragging) { dragging = true; askNow(); }
+                    if (dragPin == null) askNow();
+                    dragPin = pin;
+                    vl.setText("→ " + fmt(pin, v));      // 끄는 동안엔 놓으면 갈 값을 보여준다
+                    vl.setTextColor(u.accent);
                 } else {
-                    dragging = false;
-                    targets.put(pin, v);
-                    sendPin(pin, String.valueOf(v));
+                    dragPin = null;
+                    if (sendPin(pin, String.valueOf(v))) setTarget(pin, v);
+                    refresh();
                 }
-            } });
+            }
+            public void onCancel() { dragPin = null; refresh(); }
+        });
         bars.put(pin, sb);
 
         r.addView(minus, cb);
@@ -925,19 +1037,48 @@ public class MainActivity extends Activity {
         return box;
     }
 
+    /** −/+ 한 칸. 연달아 누르면 누른 만큼 쌓인다 */
     private void step(String pin, int max, int delta) {
-        Integer t = targets.get(pin);
-        int base = t != null ? t : pinValue("V" + pin, 0);
+        Tgt t = targets.get(pin);
+        int base = t != null ? t.to : pinValue("V" + pin, -1);
+        // 예전엔 값을 모를 때 0에서 시작해서, + 를 누르면 침대가 거의 끝까지 내려가 버렸다
+        if (base < 0) { toast("침대 값을 아직 모릅니다. 잠시 뒤 다시 눌러주세요"); askNow(); return; }
         if (pin.equals("14")) delta *= 10;
         int v = Math.max(0, Math.min(max, base + delta));
-        targets.put(pin, v);
-        sendPin(pin, String.valueOf(v));
+        if (v == base) return;
+        if (sendPin(pin, String.valueOf(v))) setTarget(pin, v);
+        refresh();
+    }
+
+    /** 목표를 기록한다. 이미 가는 중이면 출발점은 처음 것을 유지한다 */
+    private void setTarget(String pin, int to) {
+        Tgt old = targets.get(pin);
+        int from = old != null ? old.from : pinValue("V" + pin, -1);
+        targets.put(pin, new Tgt(from, to, System.currentTimeMillis()));
+    }
+
+    /** 도착했거나 너무 오래된 목표를 지운다.
+     *  예전엔 목표와 2도 차이만 나도 바로 지워서, + 를 여러 번 눌러도 1도씩만 움직이고
+     *  "몇 도 → 몇 도" 표시도 금방 사라졌다. 이제는 보낸 뒤에 새로 받은 값으로만 판단한다. */
+    private void settleTargets() {
+        long now = System.currentTimeMillis();
+        for (Iterator<Map.Entry<String, Tgt>> it = targets.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<String, Tgt> e = it.next();
+            String pin = e.getKey();
+            Tgt t = e.getValue();
+            long age = now - t.at;
+            if (age > 60000) { it.remove(); continue; }                 // 1분 넘게 소식이 없으면 포기
+            int v = pinValue("V" + pin, -1);
+            if (v < 0 || pinAt("V" + pin) < t.at + 400) continue;       // 보낸 뒤의 새 값이 아직 없다
+            int tol = pin.equals("14") ? 20 : 2;
+            if (v == t.to || (Math.abs(v - t.to) <= tol && age >= 2500)) it.remove();
+        }
     }
 
     /** 이 침대를 어느 폰으로 넘길지 고른다 */
     private void handoverPick() {
         final Beds.Bed b = cur();
-        if (b == null) { toast("먼저 침대를 고르세요"); return; }
+        if (b == null) { toast("이 폰에 등록된 침대를 먼저 고르세요"); return; }
 
         final List<LanPeers.Peer> ps = lan.peers();
         final List<String> labels = new ArrayList<>();
@@ -970,7 +1111,8 @@ public class MainActivity extends Activity {
                         .setTitle("받을 폰이 목록에 없나요?")
                         .setMessage("받을 폰에서 이 앱을 설치하고 한 번 열어두세요.\n"
                                 + "같은 와이파이에 있으면 잠시 뒤 목록에 나타납니다.\n\n"
-                                + "그래도 안 보이면 받을 폰의 주소를 직접 넣으면 됩니다.")
+                                + "그래도 안 보이면 받을 폰의 주소를 직접 넣으면 됩니다.\n"
+                                + "(받을 폰의 설정 → 이 폰 주소)")
                         .setPositiveButton("알겠습니다", null).show();
                 } })
             .show();
@@ -980,7 +1122,7 @@ public class MainActivity extends Activity {
         final EditText e = u.input("예: 192.168.0.10", "", false);
         new android.app.AlertDialog.Builder(this)
             .setTitle("받을 폰의 주소")
-            .setMessage("받을 폰에서 앱을 열고 개발자 모드에 나오는 주소를 그대로 넣으세요.")
+            .setMessage("받을 폰에서 앱을 열고 설정 → '이 폰 주소'에 나오는 숫자를 그대로 넣으세요.")
             .setView(e)
             .setPositiveButton("넘기기", new android.content.DialogInterface.OnClickListener() {
                 public void onClick(android.content.DialogInterface d, int w) {
@@ -1002,9 +1144,7 @@ public class MainActivity extends Activity {
         wizPass = prefs.getString("pass", "");
         wizShownOrphan = true;          // 넘기기 중엔 "바로 추가" 안내를 띄우지 않는다
         step = 1;   // 넘기기도 BOOT 버튼부터 시작한다
-        root.removeAllViews();
-        wizPane = buildWizard();
-        root.addView(wizPane);
+        showWizardPane();
     }
 
     /** 넘기기를 마치고 내 목록에서 뺀다 */
@@ -1015,6 +1155,7 @@ public class MainActivity extends Activity {
         sel = 0; selRemote = false;
         prefs.edit().putInt("sel", 0).apply();
         wizHandover = false;
+        step = 0;
         final String who = wizTargetPhone.isEmpty() ? "받는 폰" : wizTargetPhone;
         rebuild();
         new android.app.AlertDialog.Builder(this)
@@ -1030,37 +1171,66 @@ public class MainActivity extends Activity {
     private void startWizard() {
         wizName = ""; wizToken = ""; wizSsid = ""; wizPass = ""; step = 0; wizShownOrphan = false;
         wizHandover = false; wizTargetPhone = "";
+        showWizardPane();
+    }
+
+    private void showWizardPane() {
         root.removeAllViews();
+        setPane = null;
+        mainPane = null;
+        tabRow = null;
+        bars.clear();
+        poses.clear();
+        screen = SCR_WIZARD;
         wizPane = buildWizard();
         root.addView(wizPane);
     }
 
+    /** 이름 바꾸기 — 다른 폰에 등록된 침대(↗)도 그 폰에 부탁해서 바꾼다 */
     private void renameBed() {
+        final LanPeers.RemoteBed rb = curRemote();
         final Beds.Bed b = cur();
-        if (b == null) return;
-        final EditText e = u.input("이름", b.name, false);
+        if (rb == null && b == null) return;
+        final EditText e = u.input("이름", rb != null ? rb.name : b.name, false);
         new android.app.AlertDialog.Builder(this)
-            .setTitle("이름 바꾸기").setView(e)
+            .setTitle("침대 이름 바꾸기")
+            .setMessage(rb != null ? "이 침대는 '" + rb.phone + "' 에 등록돼 있습니다.\n그 폰에서도 이 이름으로 바뀝니다." : null)
+            .setView(e)
             .setPositiveButton("저장", new android.content.DialogInterface.OnClickListener() {
                 public void onClick(android.content.DialogInterface d, int w) {
-                    String n = e.getText().toString().trim();
-                    if (!n.isEmpty()) { b.name = n; Beds.save(prefs, beds); buildTabs(); toast("바꿨습니다"); }
+                    final String n = e.getText().toString().trim();
+                    if (n.isEmpty()) return;
+                    if (rb == null) {
+                        b.name = n; Beds.save(prefs, beds); buildTabs(); toast("바꿨습니다");
+                        if (screen == SCR_SETTINGS) renderSettings();
+                        return;
+                    }
+                    toast("바꾸는 중…");
+                    bg(new Runnable(){ public void run(){
+                        final boolean ok = lan.rename(rb.peerIp, rb.token, n);
+                        post(new Runnable(){ public void run(){
+                            if (ok) { rb.name = n; remoteSig = ""; buildTabs(); toast("바꿨습니다"); }
+                            else toast("바꾸지 못했습니다. " + (rb.phone.isEmpty() ? "주인 폰" : rb.phone)
+                                    + " 에도 새 버전을 설치해야 합니다");
+                            if (screen == SCR_SETTINGS) renderSettings();
+                        }});
+                    }});
                 } })
             .setNegativeButton("취소", null).show();
     }
 
     private void renamePhone() {
-        final EditText e = u.input("폰 이름", prefs.getString("phoneName", android.os.Build.MODEL), false);
+        final EditText e = u.input("폰 이름", App.phoneName(this), false);
         new android.app.AlertDialog.Builder(this)
-            .setTitle("이 폰 이름").setMessage("이웃 폰 목록에 이렇게 보입니다.").setView(e)
+            .setTitle("이 폰 이름").setMessage("다른 폰의 목록에 이 이름으로 보입니다.").setView(e)
             .setPositiveButton("저장", new android.content.DialogInterface.OnClickListener() {
                 public void onClick(android.content.DialogInterface d, int w) {
                     String n = e.getText().toString().trim();
                     if (!n.isEmpty()) {
                         prefs.edit().putString("phoneName", n).apply();
-                        lan.stop();
-                        lan.start(MainActivity.this, n, prefs.getString("phoneId", "x"));
+                        lan.setName(n);
                         toast("바꿨습니다");
+                        if (screen == SCR_SETTINGS) renderSettings();
                     } } })
             .setNegativeButton("취소", null).show();
     }
@@ -1070,91 +1240,228 @@ public class MainActivity extends Activity {
         if (b == null) return;
         new android.app.AlertDialog.Builder(this)
             .setTitle(b.name + " 를 지울까요?")
-            .setMessage("앱 목록에서만 사라집니다. 침대 자체는 그대로이고, 다시 추가할 수 있습니다.")
+            .setMessage("이 폰 목록에서만 사라집니다. 침대 자체는 그대로이고, 다시 추가할 수 있습니다.")
             .setPositiveButton("지우기", new android.content.DialogInterface.OnClickListener() {
                 public void onClick(android.content.DialogInterface d, int w) {
                     beds.remove(b); Beds.save(prefs, beds);
-                    sel = 0; prefs.edit().putInt("sel", 0).apply();
+                    sel = 0; selRemote = false; prefs.edit().putInt("sel", 0).apply();
                     rebuild();
                 } })
             .setNegativeButton("취소", null).show();
     }
 
-    // ── 개발자 화면 ────────────────────────────────────
-    private View buildDev() {
-        ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(u.bg);
-        LinearLayout c = u.col();
-        c.setPadding(u.dp(16), u.dp(14), u.dp(16), u.dp(28));
-        sv.addView(c);
-
-        LinearLayout top = u.row(8);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        top.addView(u.text("개발자 모드", 19, u.fg, true), new LinearLayout.LayoutParams(-2, -2));
-        top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
-        Button back = u.small("닫기", new Runnable(){ public void run(){ showDev(false); }});
-        back.setLayoutParams(new LinearLayout.LayoutParams(u.dp(80), -2));
-        top.addView(back);
-        c.addView(top);
-
-        c.addView(u.head("상태"));
-        addrView = u.text("—", 12.5f, u.fg, false);
-        addrView.setTypeface(Typeface.MONOSPACE);
-        c.addView(u.card(addrView, 13));
-        LinearLayout sr = u.row(0);
-        sr.addView(u.small("서버 켜기", new Runnable(){ public void run(){ startServer(); }}), u.w(1,4));
-        sr.addView(u.small("서버 끄기", new Runnable(){ public void run(){ stopServer(); }}), u.w(1,4));
-        c.addView(sr);
-
-        c.addView(u.head("정지 번호 찾기"));
-        c.addView(u.note("후보를 절반씩 줄입니다. 한 묶음을 눌러보고 멈췄는지만 답하면 됩니다."));
-        finderView = u.text("아직 시작하지 않았습니다.", 12.5f, u.fg, false);
-        finderView.setTypeface(Typeface.MONOSPACE);
-        c.addView(u.card(finderView, 13));
-        c.addView(u.small("이번 묶음 시험", new Runnable(){ public void run(){ finderStart(); }}));
-        LinearLayout fa = u.row(0);
-        fa.addView(u.small("멈췄어요", new Runnable(){ public void run(){ finderAnswer(true); }}), u.w(1,4));
-        fa.addView(u.small("안 멈췄어요", new Runnable(){ public void run(){ finderAnswer(false); }}), u.w(1,4));
-        c.addView(fa);
-        c.addView(u.small("처음부터 다시", new Runnable(){ public void run(){
-            poolInit(); finderView.setText("후보 " + pool.size() + "개로 초기화했습니다."); }}));
-        stopPinIn = u.input("정지 번호", prefs.getString("stopPin", "41"), true);
-        c.addView(stopPinIn);
-        c.addView(u.small("정지 번호로 저장", new Runnable(){ public void run(){
-            String p = stopPinIn.getText().toString().trim();
-            if (p.isEmpty()) return;
-            prefs.edit().putString("stopPin", p).apply();
-            toast("저장했습니다"); }}));
-
-        c.addView(u.head("침대가 알려준 값"));
-        pinView = u.text("아직 없습니다", 12.5f, u.fg, false);
-        pinView.setTypeface(Typeface.MONOSPACE);
-        c.addView(u.card(pinView, 13));
-
-        c.addView(u.head("직접 보내기"));
-        LinearLayout mr = u.row(0);
-        pinIn = u.input("핀", "", true);
-        valIn = u.input("값", "1", false);
-        mr.addView(pinIn, u.w(1,3));
-        mr.addView(valIn, u.w(1,3));
-        mr.addView(u.small("보내기", new Runnable(){ public void run(){
-            String p = pinIn.getText().toString().trim();
-            if (p.isEmpty()) { toast("핀 번호를 넣어주세요"); return; }
-            String v = valIn.getText().toString().trim();
-            sendPin(p, v.isEmpty() ? "1" : v); }}), u.w(1,3));
-        c.addView(mr);
-
-        c.addView(u.head("기록"));
-        logView = u.text("", 11.5f, u.fg, false);
-        logView.setTypeface(Typeface.MONOSPACE);
-        c.addView(u.card(logView, 13));
-        return sv;
+    /** 접속해 있는데 목록에 없는 침대를 메인 화면에서 바로 추가한다 (넘겨받은 침대) */
+    private void addOrphan(final String token) {
+        String known = knownName(token);
+        final EditText e = u.input("이름", known != null ? known : (beds.isEmpty() ? "내 침대" : "침대 " + (beds.size() + 1)), false);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("이 침대를 이 폰에 등록할까요?")
+            .setMessage("등록하면 이 폰이 이 침대의 주인이 됩니다.\n이름 바꾸기·넘기기도 이 폰에서 할 수 있습니다.")
+            .setView(e)
+            .setPositiveButton("등록", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    String n = e.getText().toString().trim();
+                    if (ownToken(token)) return;
+                    beds.add(new Beds.Bed(n.isEmpty() ? "내 침대" : n, token));
+                    Beds.save(prefs, beds);
+                    sel = beds.size() - 1; selRemote = false;
+                    prefs.edit().putInt("sel", sel).apply();
+                    remoteSig = "";
+                    toast("등록했습니다");
+                    rebuild();
+                } })
+            .setNegativeButton("취소", null).show();
     }
 
-    private void showDev(boolean on) {
-        devPane.setVisibility(on ? View.VISIBLE : View.GONE);
-        mainPane.setVisibility(on ? View.GONE : View.VISIBLE);
+    // ── 각도 맞추기 ─────────────────────────────────────
+    // 침대가 알려주는 값(상체 0~80, 다리 0~45)을 실제 각도로 바꿔서 보여준다.
+    // 침대에 보내는 값은 그대로다. 사용자가 "끝까지 올렸을 때 실제로 몇 도인지"만 넣으면 된다.
+    private int rawMax(String pin) { return pin.equals("11") ? 80 : 45; }
+
+    private int realMax(String pin) {
+        return prefs.getInt(keyOf(pin.equals("11") ? "headReal" : "legReal"), rawMax(pin));
+    }
+
+    /** 침대 값 → 화면에 보일 각도 */
+    private int deg(String pin, int raw) {
+        if (raw < 0 || pin.equals("14")) return raw;
+        return Math.round(raw * (float) realMax(pin) / rawMax(pin));
+    }
+
+    private String fmt(String pin, int raw) {
+        if (raw < 0) return "—";
+        return pin.equals("14") ? String.valueOf(raw) : deg(pin, raw) + "°";
+    }
+
+    private void calibrate() {
+        LinearLayout box = u.col();
+        box.setPadding(u.dp(20), u.dp(8), u.dp(20), 0);
+        box.addView(u.note("침대를 끝까지 올렸을 때 실제로 몇 도인지 넣어주세요. "
+                + "앱의 숫자와 그림이 그 각도에 맞춰집니다. 침대 움직임은 바뀌지 않습니다."));
+        box.addView(u.text("상체 끝까지 올렸을 때 (기본 80)", 13, u.fg, true));
+        final EditText h = u.input("80", String.valueOf(realMax("11")), true);
+        box.addView(h);
+        box.addView(u.text("다리 끝까지 올렸을 때 (기본 45)", 13, u.fg, true));
+        final EditText l = u.input("45", String.valueOf(realMax("13")), true);
+        box.addView(l);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("각도 맞추기 · " + curName())
+            .setView(box)
+            .setPositiveButton("저장", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    int hv = parse(h, 80), lv = parse(l, 45);
+                    if (hv < 10 || hv > 90 || lv < 5 || lv > 90) { toast("5 ~ 90 사이 숫자로 넣어주세요"); return; }
+                    prefs.edit().putInt(keyOf("headReal"), hv).putInt(keyOf("legReal"), lv).apply();
+                    applyBedSpecific(); refresh(); renderSettings();
+                    toast("맞췄습니다");
+                } })
+            .setNeutralButton("기본값으로", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) {
+                    prefs.edit().remove(keyOf("headReal")).remove(keyOf("legReal")).apply();
+                    applyBedSpecific(); refresh(); renderSettings();
+                } })
+            .setNegativeButton("취소", null).show();
+    }
+
+    private static int parse(EditText e, int dflt) {
+        try { return Integer.parseInt(e.getText().toString().trim()); } catch (Exception x) { return dflt; }
+    }
+
+    /** 침대마다 다른 것(테이블 유무, 각도 맞춤)을 화면에 반영 */
+    private void applyBedSpecific() {
+        if (tableRow != null) tableRow.setVisibility(hasTable() ? View.VISIBLE : View.GONE);
+        for (Object[] p : poses) {
+            int body = (Integer) p[2], leg = (Integer) p[3];
+            ((BedView) p[0]).mini(deg("11", body), deg("13", leg));
+            ((TextView) p[1]).setText(deg("11", body) + "° · " + deg("13", leg) + "°");
+        }
+    }
+
+    // ── 설정 화면 (예전 '개발자 모드' 자리) ─────────────────
+    private void openSettings() {
+        if (mainPane == null) return;
+        ScrollView sv = new ScrollView(this);
+        sv.setBackgroundColor(u.bg);
+        LinearLayout outer = u.col();
+        outer.setPadding(u.dp(10), u.dp(10), u.dp(18), u.dp(28));
+        outer.addView(topBar("설정", new Runnable(){ public void run(){ closeSettings(); }}));
+        setBox = u.col();
+        setBox.setPadding(u.dp(8), 0, 0, 0);
+        outer.addView(setBox);
+        sv.addView(outer);
+        setPane = sv;
+        root.addView(setPane);
+        mainPane.setVisibility(View.GONE);
+        screen = SCR_SETTINGS;
+        renderSettings();
+    }
+
+    private void closeSettings() {
+        if (setPane != null) root.removeView(setPane);
+        setPane = null;
+        setBox = null;
+        if (mainPane != null) mainPane.setVisibility(View.VISIBLE);
+        screen = SCR_MAIN;
         refresh();
+    }
+
+    private LinearLayout group() {
+        LinearLayout g = u.col();
+        g.setBackground(u.box(u.card, u.line, 18));
+        return g;
+    }
+
+    private void renderSettings() {
+        if (setBox == null) return;
+        setBox.removeAllViews();
+
+        LanPeers.RemoteBed rb = curRemote();
+        Beds.Bed b = cur();
+        if (rb != null || b != null) {
+            setBox.addView(u.head("이 침대 · " + curName()));
+            LinearLayout g = group();
+            g.addView(linkRow("이름 바꾸기", curName(), new Runnable(){ public void run(){ renameBed(); }}));
+            g.addView(u.hair());
+            g.addView(linkRow("테이블", hasTable() ? "있음 · 조절 칸 보임" : "없음", new Runnable(){ public void run(){ toggleTable(); }}));
+            g.addView(u.hair());
+            g.addView(linkRow("각도 맞추기", "상체 " + realMax("11") + "° · 다리 " + realMax("13") + "°",
+                    new Runnable(){ public void run(){ calibrate(); }}));
+            if (b != null) {
+                g.addView(u.hair());
+                g.addView(linkRow("다른 폰으로 넘기기", null, new Runnable(){ public void run(){ handoverPick(); }}));
+                g.addView(u.hair());
+                g.addView(linkRow("이 폰 목록에서 지우기", null, new Runnable(){ public void run(){ removeBed(); }}));
+            }
+            setBox.addView(g);
+            setBox.addView(u.note(rb != null
+                    ? "이 침대의 주인은 '" + (rb.phone.isEmpty() ? "다른 폰" : rb.phone) + "' 입니다. "
+                      + "넘기기·지우기는 주인 폰에서 할 수 있습니다."
+                    : "이 폰이 이 침대의 주인입니다. 테이블이 없는 침대에서 테이블 칸을 쓰면 다리가 움직입니다."));
+        }
+
+        setBox.addView(u.head("침대"));
+        LinearLayout g2 = group();
+        g2.addView(linkRow("침대 추가하기", null, new Runnable(){ public void run(){ startWizard(); }}));
+        setBox.addView(g2);
+
+        setBox.addView(u.head("이 폰"));
+        LinearLayout g3 = group();
+        g3.addView(linkRow("이 폰 이름", App.phoneName(this), new Runnable(){ public void run(){ renamePhone(); }}));
+        g3.addView(u.hair());
+        String ip = Net.myWifiIp(this);
+        g3.addView(linkRow("이 폰 주소", ip == null ? "와이파이 없음" : ip, null));
+        g3.addView(u.hair());
+        boolean srv = App.server().isRunning();
+        g3.addView(linkRow("침대 받는 서버", srv ? "켜짐" : "꺼짐 · 눌러서 켜기",
+                srv ? null : new Runnable(){ public void run(){
+                    startServer();
+                    ui.postDelayed(new Runnable(){ public void run(){ renderSettings(); }}, 800); }}));
+        if (!battOk()) {
+            g3.addView(u.hair());
+            g3.addView(linkRow("배터리 제한 풀기", "권장", new Runnable(){ public void run(){ askBattery(); }}));
+        }
+        setBox.addView(g3);
+        setBox.addView(u.note("다른 폰이 넘기기 목록에서 이 폰을 못 찾으면, 위 주소를 직접 넣으면 됩니다."));
+
+        setBox.addView(u.head("앱"));
+        LinearLayout g4 = group();
+        g4.addView(linkRow("새 버전 확인", "지금 " + Updates.installed(this),
+                new Runnable(){ public void run(){ checkUpdate(true); }}));
+        g4.addView(u.hair());
+        g4.addView(linkRow("연결 기록 보기", null, new Runnable(){ public void run(){ showLog(); }}));
+        setBox.addView(g4);
+        setBox.addView(u.note("문제가 생기면 연결 기록 화면을 캡처해서 보내주세요."));
+    }
+
+    /** 문제 해결용 기록 — 예전 개발자 모드에서 쓸모 있던 부분만 남겼다 */
+    private void showLog() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("서버 ").append(App.server().isRunning() ? "켜짐" : "꺼짐");
+        String ip = Net.myWifiIp(this);
+        sb.append(" · 이 폰 ").append(ip == null ? "와이파이 없음" : ip + ":" + BedServer.PORT).append('\n');
+        for (Beds.Bed b : beds) {
+            BedServer.Dev dd = App.server().byToken(b.token);
+            sb.append(b.name).append("  ").append(dd == null ? "연결 안 됨" : dd.ip);
+            if (dd != null) for (Map.Entry<String,String> e : dd.pins.entrySet())
+                sb.append("  ").append(e.getKey()).append('=').append(e.getValue());
+            sb.append('\n');
+        }
+        for (LanPeers.Peer p : lan.peers())
+            sb.append("이웃 ").append(p.phone).append("  ").append(p.ip)
+              .append("  침대 ").append(p.beds.size()).append("대\n");
+        sb.append('\n');
+        for (String[] x : App.log()) sb.append(x[0]).append("  ").append(x[1]).append("  ").append(x[2]).append('\n');
+
+        TextView tv = u.text(sb.toString().trim(), 11f, u.fg, false);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setTextIsSelectable(true);
+        tv.setPadding(u.dp(18), u.dp(8), u.dp(18), u.dp(8));
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("연결 기록")
+            .setView(sv)
+            .setPositiveButton("닫기", null).show();
     }
 
     // ── 주기 ───────────────────────────────────────────
@@ -1177,23 +1484,46 @@ public class MainActivity extends Activity {
             bg(new Runnable(){ public void run(){
                 lan.refresh();
                 final List<LanPeers.RemoteBed> rb = lan.remoteBeds();
-                post(new Runnable(){ public void run(){
-                    boolean changed = rb.size() != remotes.size();
-                    boolean wasNone = remotes.isEmpty();
-                    remotes = rb;
-                    if (changed && tabRow != null) buildTabs();
-                    // 마법사 첫 화면에 있을 때만, 안내를 띄우기 위해 다시 그린다
-                    if (wasNone && !remotes.isEmpty() && beds.isEmpty()
-                            && wizBox != null && step == 0 && !wizHandover) {
-                        String typed = wizNameIn != null ? wizNameIn.getText().toString() : null;
-                        renderStep();
-                        if (typed != null && !typed.isEmpty() && wizNameIn != null)
-                            wizNameIn.setText(typed);
-                    }
-                }});
+                post(new Runnable(){ public void run(){ applyRemotes(rb); }});
             }});
             if (ticking) ui.postDelayed(this, 3000);
         } };
+
+    /** 이웃 폰 침대 목록을 반영한다 — 고른 침대는 순서가 바뀌어도 그대로 유지 */
+    private void applyRemotes(List<LanPeers.RemoteBed> all) {
+        String selTok = selRemote && sel < remotes.size() ? remotes.get(sel).token : null;
+        boolean wasNone = remotes.isEmpty();
+        allRemotes = all;
+        List<LanPeers.RemoteBed> mine = new ArrayList<>();
+        StringBuilder sig = new StringBuilder();
+        for (LanPeers.RemoteBed r : all) {
+            if (ownToken(r.token)) continue;       // 내 목록에 있는 침대는 한 번만 보인다
+            mine.add(r);
+            sig.append(r.token).append('=').append(r.name).append(';');
+        }
+        remotes = mine;
+        if (selTok != null) {
+            int found = -1;
+            for (int i = 0; i < remotes.size(); i++) if (remotes.get(i).token.equals(selTok)) found = i;
+            if (found >= 0) sel = found;
+            else { selRemote = false; sel = 0; targets.clear(); }
+        }
+        fixSel();
+        boolean changed = !sig.toString().equals(remoteSig);
+        remoteSig = sig.toString();
+
+        if (screen == SCR_MAIN) {
+            if (beds.isEmpty() && remotes.isEmpty()) { rebuild(); return; }   // 볼 침대가 없어졌다 → 연결하기 화면
+            if (changed) { buildTabs(); applyBedSpecific(); }
+        } else if (screen == SCR_WIZARD && wasNone && !remotes.isEmpty() && beds.isEmpty()
+                && wizBox != null && step == 0 && !wizHandover) {
+            // 마법사 첫 화면에 있을 때만, 안내를 띄우기 위해 다시 그린다
+            String typed = wizNameIn != null ? wizNameIn.getText().toString() : null;
+            renderStep();
+            if (typed != null && !typed.isEmpty() && wizNameIn != null)
+                wizNameIn.setText(typed);
+        }
+    }
 
     private void askBurst() {
         for (int i = 1; i <= 8; i++)
@@ -1203,9 +1533,11 @@ public class MainActivity extends Activity {
     private void askNow() {
         if (curRemote() != null) {
             final LanPeers.RemoteBed r = curRemote();
+            final boolean tb = hasTable();
             bg(new Runnable(){ public void run(){
                 lan.send(r.peerIp, r.token, "11", "read");
-                lan.send(r.peerIp, r.token, "13", "read"); }});
+                lan.send(r.peerIp, r.token, "13", "read");
+                if (tb) lan.send(r.peerIp, r.token, "14", "read"); }});
             return;
         }
         final BedServer.Dev d = dev();
@@ -1226,15 +1558,24 @@ public class MainActivity extends Activity {
 
     // ── 새로고침 ───────────────────────────────────────
     private void refresh() {
-        if (beds.isEmpty() && !remotes.isEmpty()) {
-            selRemote = true;
-            if (sel >= remotes.size()) sel = 0;
+        // 다른 폰이 이 폰 침대의 이름을 바꾼 경우 등 — 저장된 목록을 다시 읽는다
+        if (App.bedsRev != seenRev) {
+            seenRev = App.bedsRev;
+            String selTok = cur() != null ? cur().token : null;
+            beds = Beds.load(prefs);
+            if (selTok != null) for (int i = 0; i < beds.size(); i++) if (beds.get(i).token.equals(selTok)) sel = i;
+            fixSel();
+            buildTabs();
+            if (screen == SCR_SETTINGS) renderSettings();
         }
-        if (beds.isEmpty() && remotes.isEmpty()) {
-            if (wizBox != null && step == 0 && orphanToken() != null
+        if (screen == SCR_WIZARD) {
+            if (wizBox != null && step == 0 && !wizHandover && orphanToken() != null
                     && wizBox.getChildCount() > 0 && !wizShownOrphan) {
                 wizShownOrphan = true;
+                String typed = wizNameIn != null ? wizNameIn.getText().toString() : null;
                 renderStep();
+                if (typed != null && !typed.isEmpty() && wizNameIn != null && !beds.isEmpty())
+                    wizNameIn.setText(typed);
             }
             return;
         }
@@ -1248,42 +1589,81 @@ public class MainActivity extends Activity {
         statusDot.setTextColor(on ? 0xFFFFFFFF : u.muted);
         statusDot.setBackground(u.box(on ? u.ok : u.card, on ? 0 : u.line, 20));
 
+        settleTargets();
         int h = pinValue("V11", -1), l = pinValue("V13", -1), tb = pinValue("V14", -1);
-        Integer ht = targets.get("11"), lt = targets.get("13"), tt = targets.get("14");
-        if (ht != null && h >= 0 && Math.abs(h - ht) <= 2) { targets.remove("11"); ht = null; }
-        if (lt != null && l >= 0 && Math.abs(l - lt) <= 2) { targets.remove("13"); lt = null; }
-        if (tt != null && tb >= 0 && Math.abs(tb - tt) <= 20) { targets.remove("14"); tt = null; }
+        Tgt ht = targets.get("11"), lt = targets.get("13"), tt = targets.get("14");
 
-        bedView.set(Math.max(h,0), Math.max(l,0), ht == null ? -1 : ht, lt == null ? -1 : lt);
+        bedView.set(Math.max(deg("11", h), 0), Math.max(deg("13", l), 0),
+                ht == null ? -1 : deg("11", ht.to), lt == null ? -1 : deg("13", lt.to));
         if (!on) { angleText.setText("침대를 기다리는 중"); angleText.setTextColor(u.muted); }
-        else if (ht != null || lt != null) {
-            angleText.setText("움직이는 중 …"); angleText.setTextColor(u.accent);
-        } else {
-            angleText.setText("상체 " + Math.max(h,0) + "°    ·    다리 " + Math.max(l,0) + "°");
-            angleText.setTextColor(u.fg);
+        else {
+            // 움직이는 중에는 "몇 도 → 몇 도" 를 보여준다
+            angleText.setText("상체 " + moveText("11", h, ht) + "    ·    다리 " + moveText("13", l, lt));
+            angleText.setTextColor(ht != null || lt != null ? u.accent : u.fg);
         }
 
-        headVal.setText(label(h, ht, "°"));
-        legVal.setText(label(l, lt, "°"));
-        tableVal.setText(label(tb, tt, ""));
-        if (!dragging) { syncBar("11", h, ht); syncBar("13", l, lt); syncBar("14", tb, tt); }
+        setVal(headVal, "11", h, ht);
+        setVal(legVal, "13", l, lt);
+        setVal(tableVal, "14", tb, tt);
+        syncBar("11", h, ht); syncBar("13", l, lt); syncBar("14", tb, tt);
 
-        boolean lightOn = pinValue("V52", 0) > 0, spkOn = pinValue("V61", 0) > 0;
-        statePill(lightState, lightOn);
-        statePill(speakerState, spkOn);
+        statePill(lightState, toggleOn("52"));
+        statePill(speakerState, toggleOn("61"));
 
-        applyOwnerRows();
         slotText.setText(slotLine());
         stopBtn.setAlpha(on ? 1f : 0.45f);
         checkAddress(rb != null, on);
+        updateNotice();
+    }
 
-        if (devPane != null && devPane.getVisibility() == View.VISIBLE) refreshDev();
+    private String moveText(String pin, int v, Tgt t) {
+        if (t == null) return fmt(pin, v);
+        int from = t.from >= 0 ? t.from : v;
+        return (from >= 0 ? fmt(pin, from) + " → " : "→ ") + fmt(pin, t.to);
+    }
+
+    private void setVal(TextView tv, String pin, int v, Tgt t) {
+        if (tv == null || pin.equals(dragPin)) return;     // 끌고 있는 동안에는 덮어쓰지 않는다
+        tv.setText(moveText(pin, v, t));
+        tv.setTextColor(t != null ? u.accent : u.fg);
+    }
+
+    /** 메인 화면 위쪽 안내 카드 */
+    private void updateNotice() {
+        if (noticeCard == null) return;
+        final String orphan = orphanToken();
+        if (orphan != null) {
+            String known = knownName(orphan);
+            noticeView.setText("이 폰에 새로 접속한 침대가 있습니다"
+                    + (known != null ? " (" + known + ")" : "") + ".\n"
+                    + "다른 폰에서 넘겨받은 침대라면, 여기서 등록하면 끝입니다.");
+            noticeBtn.setText("이 폰에 등록하기");
+            noticeAction = new Runnable(){ public void run(){ addOrphan(orphan); }};
+            noticeCard.setVisibility(View.VISIBLE);
+            return;
+        }
+        final Beds.Bed b = cur();
+        if (b != null && dev() == null) {
+            for (LanPeers.RemoteBed r : allRemotes) {
+                if (r.token.equals(b.token) && r.online) {
+                    noticeView.setText("'" + b.name + "' 는 지금 " + (r.phone.isEmpty() ? "다른 폰" : r.phone)
+                            + " 에 붙어 있습니다.\n그 폰으로 넘겼다면 이 폰 목록에서 빼주세요. "
+                            + "빼도 ↗ 표시로 계속 조작할 수 있습니다.");
+                    noticeBtn.setText("이 폰 목록에서 빼기");
+                    noticeAction = new Runnable(){ public void run(){ removeBed(); }};
+                    noticeCard.setVisibility(View.VISIBLE);
+                    return;
+                }
+            }
+        }
+        noticeAction = null;
+        noticeCard.setVisibility(View.GONE);
     }
 
     /** 폰 주소가 침대에 심어준 주소와 달라졌는지 본다 */
     private void checkAddress(boolean remote, boolean online) {
         if (warnCard == null) return;
-        if (remote || online) { warnCard.setVisibility(View.GONE); return; }
+        if (remote || online || cur() == null) { warnCard.setVisibility(View.GONE); return; }
         String ip = Net.myWifiIp(this);
         String want = prefs.getString("b_" + curToken() + "_host", prefs.getString("homeIp", ""));
         if (ip == null || !Net.isLan(ip) || want.isEmpty()) { warnCard.setVisibility(View.GONE); return; }
@@ -1301,8 +1681,8 @@ public class MainActivity extends Activity {
             warnView.setText("폰 주소가 바뀌었습니다.\n\n"
                     + "침대는 " + want + " 를 찾아가는데\n"
                     + "지금 이 폰은 " + ip + " 입니다.\n\n"
-                    + "· 폰 와이파이 설정에서 주소를 " + want + " 로 고정하거나\n"
-                    + "· 침대 추가하기로 주소를 다시 심어주세요");
+                    + "· 공유기 설정에서 이 폰 주소를 " + want + " 로 고정하거나\n"
+                    + "· 설정 → 침대 추가하기로 주소를 다시 심어주세요");
         }
         warnCard.setVisibility(View.VISIBLE);
     }
@@ -1317,58 +1697,18 @@ public class MainActivity extends Activity {
         return net(a).equals(net(b));
     }
 
-    private void syncBar(String pin, int cur, Integer target) {
+    private void syncBar(String pin, int cur, Tgt target) {
+        if (pin.equals(dragPin)) return;
         Slider sb = bars.get(pin);
         if (sb == null) return;
         if (cur >= 0) sb.setValue(Math.min(cur, sb.getMax()));
-        sb.setTarget(target == null ? -1 : Math.min(target, sb.getMax()));
-    }
-
-    private String label(int v, Integer t, String unit) {
-        if (t != null) return t + unit + " →";
-        return v < 0 ? "—" : (v + unit);
-    }
-
-    private void refreshDev() {
-        String ip = Net.myWifiIp(this);
-        if (ip != null && Net.isLan(ip) && !ip.startsWith("192.168.4."))
-            prefs.edit().putString("homeIp", ip).apply();
-        StringBuilder a = new StringBuilder();
-        a.append("서버      ").append(App.server().isRunning() ? "켜짐" : "꺼짐").append('\n');
-        a.append("폰 주소    ").append(ip == null ? "와이파이 없음" : ip)
-         .append(" : ").append(BedServer.PORT).append('\n');
-        for (Beds.Bed b : beds) {
-            BedServer.Dev dd = App.server().byToken(b.token);
-            a.append(b.name).append("   ").append(dd == null ? "연결 안 됨" : dd.ip).append('\n');
-        }
-        a.append("\n이웃 폰\n");
-        List<LanPeers.Peer> ps = lan.peers();
-        if (ps.isEmpty()) a.append("   찾은 폰이 없습니다\n");
-        for (LanPeers.Peer p : ps) {
-            a.append("   ").append(p.phone).append("  ").append(p.ip)
-             .append("  침대 ").append(p.beds.size()).append("대\n");
-        }
-        addrView.setText(a.toString().trim());
-
-        StringBuilder pv = new StringBuilder();
-        BedServer.Dev d = dev();
-        if (d != null) for (Map.Entry<String,String> e : d.pins.entrySet())
-            pv.append(e.getKey()).append(" = ").append(e.getValue()).append('\n');
-        pinView.setText(pv.length() == 0 ? "아직 없습니다" : pv.toString().trim());
-
-        StringBuilder lg = new StringBuilder();
-        for (String[] x : App.log()) lg.append(x[0]).append("  ").append(x[1]).append("  ").append(x[2]).append('\n');
-        logView.setText(lg.length() == 0 ? "아직 기록이 없습니다" : lg.toString().trim());
+        sb.setTarget(target == null ? -1 : Math.min(target.to, sb.getMax()));
     }
 
     // ── 동작 ───────────────────────────────────────────
     private void startServer() {
         Intent i = new Intent(this, ServerService.class);
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
-    }
-    private void stopServer() {
-        prefs.edit().putBoolean("serverOn", false).apply();
-        stopService(new Intent(this, ServerService.class));
     }
 
     private BedServer.Dev dev() {
@@ -1385,33 +1725,59 @@ public class MainActivity extends Activity {
         return fallback;
     }
 
-    private void sendPin(final String pin, final String value) {
+    /** 그 값을 침대에게서 받은 시각 (없으면 0) */
+    private long pinAt(String key) {
+        LanPeers.RemoteBed r = curRemote();
+        Long t = null;
+        if (r != null) t = r.pinAt.get(key);
+        else { BedServer.Dev d = dev(); if (d != null) t = d.pinAt.get(key); }
+        return t == null ? 0 : t;
+    }
+
+    /** 명령을 보낸다. 보낼 수 없는 상태면 알려주고 false */
+    private boolean sendPin(final String pin, final String value) {
         final LanPeers.RemoteBed r = curRemote();
+        final String k = curToken() + "|" + pin;
         if (r != null) {
-            if (!r.online) { toast("그 침대가 지금 꺼져 있습니다"); return; }
+            if (!r.online) { toast("그 침대가 지금 꺼져 있습니다"); return false; }
+            rememberSent(k, value);
+            if (pin.equals("11") || pin.equals("13") || pin.equals("14")) askBurst();
             bg(new Runnable(){ public void run(){
                 final boolean ok = lan.send(r.peerIp, r.token, pin, value);
-                if (!ok) post(new Runnable(){ public void run(){ toast("이웃 폰에 닿지 않습니다"); }});
+                if (!ok) post(new Runnable(){ public void run(){
+                    toast("명령이 전달되지 않았습니다. " + (r.phone.isEmpty() ? "주인 폰" : r.phone) + " 이 켜져 있는지 확인해주세요"); }});
             }});
-            return;
+            return true;
         }
         final BedServer.Dev d = dev();
-        if (d == null) { toast("이 침대가 접속해 있지 않습니다"); return; }
+        if (d == null) { toast(cur() == null ? "침대를 먼저 고르세요" : "이 침대가 접속해 있지 않습니다"); return false; }
+        rememberSent(k, value);
         if (pin.equals("11") || pin.equals("13") || pin.equals("14")
                 || pin.equals(prefs.getString("stopPin","41"))) askBurst();
         bg(new Runnable(){ public void run(){ App.server().write(d, pin, value); }});
+        return true;
     }
 
-    private void preset(int body, int leg) {
-        targets.put("11", body); targets.put("13", leg);
-        sendPin("11", String.valueOf(body));
-        sendPin("13", String.valueOf(leg));
+    private void rememberSent(String k, String value) {
+        try {
+            sentVal.put(k, (int) Double.parseDouble(value));
+            sentAt.put(k, System.currentTimeMillis());
+        } catch (Exception ignored) {}
+    }
+
+    private boolean preset(int body, int leg) {
+        if (!sendPin("11", String.valueOf(body))) return false;
+        setTarget("11", body);
+        if (sendPin("13", String.valueOf(leg))) setTarget("13", leg);
+        refresh();
+        return true;
     }
 
     private void doStop() {
         targets.clear();
         sendPin(prefs.getString("stopPin", "41"), "1");
         toast("정지");
+        refresh();
     }
 
     private String keyOf(String n) { return "b_" + curToken() + "_" + n; }
@@ -1430,7 +1796,13 @@ public class MainActivity extends Activity {
         Updates.check(this, ui, new Updates.Callback() {
             public void done(Updates.Info n) {
                 prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).apply();
-                if (n != null) showUpdate(n);
+                if (n != null) {
+                    showUpdate(n);
+                    if (manual && screen == SCR_SETTINGS) {
+                        closeSettings();
+                        toast("새 버전 " + n.version + " 이 있습니다");
+                    }
+                }
                 else if (manual) toast("지금이 최신 버전입니다 (" + Updates.installed(MainActivity.this) + ")");
             } });
     }
@@ -1452,20 +1824,10 @@ public class MainActivity extends Activity {
         } catch (Throwable t) { toast("인터넷 창을 열 수 없습니다"); }
     }
 
-    /** 이웃 폰 침대를 고른 동안에는 주인용 메뉴를 감춘다 */
-    private void applyOwnerRows() {
-        int vis = (!selRemote && cur() != null) ? View.VISIBLE : View.GONE;
-        for (View v : ownerRows) if (v != null) v.setVisibility(vis);
-    }
-
-    private void applyTable() {
-        boolean t = hasTable();
-        tableToggle.setText(t ? "테이블 숨기기" : "테이블 사용 중이면 누르세요");
-        tableRow.setVisibility(t ? View.VISIBLE : View.GONE);
-    }
     private void toggleTable() {
         prefs.edit().putBoolean(keyOf("table"), !hasTable()).apply();
-        applyTable();
+        applyBedSpecific();
+        renderSettings();
     }
 
     private void saveSlot(String s) {
@@ -1478,58 +1840,16 @@ public class MainActivity extends Activity {
     private void recallSlot(String s) {
         int b = prefs.getInt(keyOf(s + "b"), -1);
         if (b < 0) { toast(s + "에 저장된 자세가 없습니다"); return; }
-        preset(b, prefs.getInt(keyOf(s + "l"), 0));
-        toast(s + " 자세로");
+        if (preset(b, prefs.getInt(keyOf(s + "l"), 0))) toast(s + " 자세로");
     }
     private String slotLine() {
         StringBuilder sb = new StringBuilder();
         for (String s : new String[]{"A","B"}) {
             int b = prefs.getInt(keyOf(s + "b"), -1);
             sb.append(s).append(" ").append(b < 0 ? "비어 있음"
-                    : (b + "도 · " + prefs.getInt(keyOf(s + "l"), 0) + "도")).append("      ");
+                    : (deg("11", b) + "도 · " + deg("13", prefs.getInt(keyOf(s + "l"), 0)) + "도")).append("      ");
         }
         return sb.toString().trim();
-    }
-
-    private void poolInit() { pool.clear(); for (int c : CANDIDATES) pool.add(c); trying.clear(); }
-
-    private void finderStart() {
-        if (dev() == null) { toast("침대가 접속해 있지 않습니다"); return; }
-        if (pool.isEmpty()) poolInit();
-        if (pool.size() == 1) { stopPinIn.setText(String.valueOf(pool.get(0)));
-            finderView.setText("찾았습니다.  V" + pool.get(0)); return; }
-        trying.clear();
-        int half = (pool.size() + 1) / 2;
-        for (int i = 0; i < half; i++) trying.add(pool.get(i));
-        int cur2 = pinValue("V11", 0);
-        int far = cur2 < 40 ? 80 : 0;
-        targets.put("11", far);
-        sendPin("11", String.valueOf(far));
-        finderView.setText("후보 " + pool.size() + "개 중 " + trying.size() + "개 시험.\n4초 뒤 눌러봅니다.");
-        ui.postDelayed(finderFire, 4000);
-    }
-
-    private final Runnable finderFire = new Runnable() {
-        public void run() {
-            final List<Integer> batch = new ArrayList<>(trying);
-            final BedServer.Dev d = dev();
-            bg(new Runnable(){ public void run(){
-                if (d == null) return;
-                for (int pin : batch) {
-                    App.server().write(d, String.valueOf(pin), "1");
-                    try { Thread.sleep(120); } catch (Exception ignored) {}
-                } }});
-            finderView.setText("눌러봤습니다 (" + batch.size() + "개)\n\n멈췄나요?");
-        } };
-
-    private void finderAnswer(boolean stopped) {
-        if (trying.isEmpty()) { toast("먼저 시험을 누르세요"); return; }
-        if (stopped) { pool.clear(); pool.addAll(trying); } else pool.removeAll(trying);
-        trying.clear();
-        if (pool.isEmpty()) { finderView.setText("후보가 모두 떨어졌습니다."); return; }
-        if (pool.size() == 1) { stopPinIn.setText(String.valueOf(pool.get(0)));
-            finderView.setText("찾았습니다.  V" + pool.get(0)); return; }
-        finderView.setText("남은 후보 " + pool.size() + "개\n다시 '이번 묶음 시험'을 누르세요.");
     }
 
     /** 지금 폰이 붙어 있는 와이파이 이름 (위치 권한 필요) */
@@ -1565,7 +1885,7 @@ public class MainActivity extends Activity {
             String ss = currentSsid();
             if (ss != null) { wizSsid = ss; prefs.edit().putString("homeSsid", ss).apply(); toast("와이파이 이름을 가져왔습니다"); }
             else toast("가져오지 못했습니다. 위치 기능이 켜져 있는지 확인해주세요");
-            if (beds.isEmpty() && wizBox != null) renderStep();
+            if (screen == SCR_WIZARD && wizBox != null) renderStep();
         }
     }
 

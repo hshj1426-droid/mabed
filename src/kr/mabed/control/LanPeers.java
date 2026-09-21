@@ -20,8 +20,10 @@ public class LanPeers {
 
     public static class RemoteBed {
         public String name, token, peerIp;
+        public String phone = "";            // 이 침대의 주인 폰 이름
         public boolean online;
         public final Map<String,String> pins = new LinkedHashMap<>();
+        public final Map<String,Long> pinAt = new LinkedHashMap<>();   // 이 폰 시계 기준, 값을 받은 시각
     }
 
     private final Map<String, Peer> peers = new LinkedHashMap<>();
@@ -49,6 +51,9 @@ public class LanPeers {
         new Thread(new Runnable(){ public void run(){ beacon(); }}).start();
     }
 
+    /** 이웃에게 알릴 이 폰 이름을 바꾼다 */
+    public void setName(String name) { if (name != null && !name.isEmpty()) myName = name; }
+
     public void stop() {
         running = false;
         try { if (mcast != null && mcast.isHeld()) mcast.release(); } catch (Throwable ignored) {}
@@ -66,7 +71,7 @@ public class LanPeers {
 
     public List<RemoteBed> remoteBeds() {
         List<RemoteBed> out = new ArrayList<>();
-        for (Peer p : peers()) out.addAll(p.beds);
+        for (Peer p : peers()) synchronized (p.beds) { out.addAll(p.beds); }
         return out;
     }
 
@@ -127,11 +132,17 @@ public class LanPeers {
                     rb.token = j.optString("token", "");
                     rb.online = j.optBoolean("online", false);
                     rb.peerIp = p.ip;
+                    rb.phone = p.phone;
                     JSONObject pins = j.optJSONObject("pins");
                     if (pins != null) {
                         Iterator<String> it = pins.keys();
                         while (it.hasNext()) { String k = it.next(); rb.pins.put(k, pins.optString(k)); }
                     }
+                    // 옛 버전 폰은 age 를 안 보낸다 — 그때는 방금 받은 값으로 친다
+                    JSONObject age = j.optJSONObject("age");
+                    long now = System.currentTimeMillis();
+                    for (String k : rb.pins.keySet())
+                        rb.pinAt.put(k, now - (age == null ? 0 : Math.max(0, age.optLong(k, 0))));
                     fresh.add(rb);
                 }
                 synchronized (p.beds) { p.beds.clear(); p.beds.addAll(fresh); }
@@ -139,11 +150,21 @@ public class LanPeers {
         }
     }
 
+    /** 이웃 폰을 거쳐 명령을 보낸다. 그 폰에 닿았고, 침대에도 전달됐으면 true */
     public boolean send(String peerIp, String token, String pin, String val) {
         try {
-            http("http://" + peerIp + ":" + ApiServer.PORT + "/cmd?token=" + enc(token)
+            String r = http("http://" + peerIp + ":" + ApiServer.PORT + "/cmd?token=" + enc(token)
                     + "&pin=" + enc(pin) + "&val=" + enc(val), 3000);
-            return true;
+            return new JSONObject(r).optBoolean("ok", true);
+        } catch (Exception e) { return false; }
+    }
+
+    /** 이웃 폰에 등록된 침대 이름을 바꾼다 */
+    public boolean rename(String peerIp, String token, String name) {
+        try {
+            String r = http("http://" + peerIp + ":" + ApiServer.PORT + "/rename?token=" + enc(token)
+                    + "&name=" + enc(name), 3000);
+            return new JSONObject(r).optBoolean("ok", false);
         } catch (Exception e) { return false; }
     }
 

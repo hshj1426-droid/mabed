@@ -6,7 +6,7 @@ import android.graphics.drawable.Drawable;
 /** 코드로 직접 그린 아이콘 (그림 파일 없이) */
 public class Glyph extends Drawable {
 
-    public static final int STOP = 0, LAMP = 1, SPEAKER = 2, CHEVRON = 3, GEAR = 4;
+    public static final int STOP = 0, LAMP = 1, SPEAKER = 2, CHEVRON = 3, GEAR = 4, BACK = 5;
 
     private final int kind, color, size;
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -86,6 +86,15 @@ public class Glyph extends Drawable {
                     c.drawLine(cx + dx * s * 0.27f, cy + dy * s * 0.27f,
                                cx + dx * s * 0.38f, cy + dy * s * 0.38f, p);
                 }
+                break;
+            }
+            case BACK: {   // 왼쪽 화살표 ←
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(s * 0.10f);
+                float r = s * 0.30f;
+                c.drawLine(cx + r, cy, cx - r, cy, p);
+                c.drawLine(cx - r, cy, cx - r * 0.25f, cy - r * 0.75f, p);
+                c.drawLine(cx - r, cy, cx - r * 0.25f, cy + r * 0.75f, p);
                 break;
             }
         }

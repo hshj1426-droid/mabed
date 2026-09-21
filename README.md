@@ -45,7 +45,7 @@
 Gradle 도 AndroidX 도 안 쓴다. 수동 도구 사슬.
 
 ```
-./build.sh 5.2.0      # build/mabed-5.2.0.apk 가 나온다
+./build.sh 5.4.0      # build/mabed-5.4.0.apk 가 나온다
 ```
 
 필요한 것:
@@ -63,7 +63,7 @@ Gradle 도 AndroidX 도 안 쓴다. 수동 도구 사슬.
 
 | 파일 | 하는 일 |
 |------|---------|
-| `MainActivity.java` | 화면 전체 — 메인/설정 마법사/개발자 모드 |
+| `MainActivity.java` | 화면 전체 — 메인/설정 화면/설정 마법사 |
 | `BedServer.java` | Blynk 프로토콜 TCP 서버 (건드리지 말 것) |
 | `ServerService.java` | 앱을 내려도 서버가 살아있게 하는 서비스 |
 | `BootReceiver.java` | 폰 재부팅 후 서버 되살리기 |

@@ -9,7 +9,10 @@ import android.widget.LinearLayout;
 /** 직접 그린 슬라이더 — 둥근 트랙, 큰 손잡이, 목표 위치 눈금 */
 public class Slider extends View {
 
-    public interface Listener { void onSlide(int value, boolean finished); }
+    public interface Listener {
+        void onSlide(int value, boolean finished);
+        void onCancel();
+    }
 
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final int cTrack, cFill, cThumb, cGhost;
@@ -69,23 +72,49 @@ public class Slider extends View {
         c.drawCircle(tx, cy, thumbR() * 0.40f, p);
     }
 
+    // 옆으로 끌었을 때만 조절로 친다. 화면을 위아래로 넘기다 스친 것·톡 친 것은 무시한다 (침대가 멋대로 움직이지 않게)
+    private float downX, downY;
+    private boolean drag = false;
+    private int before = 0;
+
     @Override public boolean onTouchEvent(MotionEvent e) {
         float w = right() - left();
         if (w <= 0) return false;
         int v = clamp(Math.round((e.getX() - left()) / w * max));
-        int act = e.getAction();
-        if (act == MotionEvent.ACTION_DOWN || act == MotionEvent.ACTION_MOVE) {
-            if (act == MotionEvent.ACTION_DOWN && getParent() != null)
-                getParent().requestDisallowInterceptTouchEvent(true);
-            setValue(v);
-            if (listener != null) listener.onSlide(v, false);
-            return true;
-        }
-        if (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL) {
-            if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
-            setValue(v);
-            if (listener != null) listener.onSlide(v, true);
-            return true;
+        float slop = 8 * d;
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                downX = e.getX(); downY = e.getY();
+                drag = false;
+                before = value;
+                return true;
+            case MotionEvent.ACTION_MOVE:
+                if (!drag) {
+                    float dx = Math.abs(e.getX() - downX), dy = Math.abs(e.getY() - downY);
+                    if (dx > slop && dx > dy) {
+                        drag = true;
+                        if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+                    } else return true;   // 아직 방향을 모른다 — 세로면 스크롤이 가져간다
+                }
+                setValue(v);
+                if (listener != null) listener.onSlide(v, false);
+                return true;
+            case MotionEvent.ACTION_UP:
+                if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
+                if (drag) {
+                    drag = false;
+                    setValue(v);
+                    if (listener != null) listener.onSlide(v, true);
+                }
+                return true;
+            case MotionEvent.ACTION_CANCEL:
+                if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(false);
+                if (drag) {
+                    drag = false;
+                    setValue(before);          // 끌다가 취소되면 명령을 보내지 않고 되돌린다
+                    if (listener != null) listener.onCancel();
+                }
+                return true;
         }
         return super.onTouchEvent(e);
     }

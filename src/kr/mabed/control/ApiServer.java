@@ -14,6 +14,8 @@ public class ApiServer {
     public interface Host {
         List<Beds.Bed> beds();
         String phoneName();
+        /** 다른 폰이 이 폰에 등록된 침대 이름을 바꾼다 */
+        boolean rename(String token, String name);
     }
 
     private ServerSocket server;
@@ -58,6 +60,7 @@ public class ApiServer {
             String body;
             if (path.startsWith("/state")) body = state();
             else if (path.startsWith("/cmd")) body = cmd(query(path));
+            else if (path.startsWith("/rename")) body = rename(query(path));
             else body = "{\"ok\":false}";
             byte[] out = body.getBytes("UTF-8");
             OutputStream o = s.getOutputStream();
@@ -94,9 +97,16 @@ public class ApiServer {
                 BedServer.Dev d = App.server().byToken(b.token);
                 j.put("online", d != null);
                 JSONObject pins = new JSONObject();
-                if (d != null) for (Map.Entry<String,String> e : d.pins.entrySet())
-                    pins.put(e.getKey(), e.getValue());
+                JSONObject ages = new JSONObject();   // 각 값을 받은 지 몇 ms 됐는지 (폰끼리 시계가 달라서 나이로 보낸다)
+                long now = System.currentTimeMillis();
+                if (d != null) {
+                    for (Map.Entry<String,String> e : d.pins.entrySet())
+                        pins.put(e.getKey(), e.getValue());
+                    for (Map.Entry<String,Long> e : d.pinAt.entrySet())
+                        ages.put(e.getKey(), Math.max(0, now - e.getValue()));
+                }
                 j.put("pins", pins);
+                j.put("age", ages);
                 arr.put(j);
             }
             o.put("beds", arr);
@@ -113,5 +123,13 @@ public class ApiServer {
         if ("read".equals(val)) ok = App.server().read(d, pin);
         else ok = App.server().write(d, pin, val == null ? "1" : val);
         return "{\"ok\":" + ok + "}";
+    }
+
+    private String rename(Map<String,String> q) {
+        String token = q.get("token"), name = q.get("name");
+        if (token == null || name == null || name.trim().isEmpty()) return "{\"ok\":false}";
+        String n = name.trim();
+        if (n.length() > 30) n = n.substring(0, 30);
+        return "{\"ok\":" + host.rename(token, n) + "}";
     }
 }
