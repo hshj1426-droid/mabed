@@ -45,6 +45,8 @@ src/kr/mabed/control/
   Beds.java          등록 침대 목록 (prefs "beds" JSON)
   Net.java           와이파이 주소, 침대 AP 통신, isLan()
   Updates.java       깃허브 릴리스로 새 버전 확인 (REPO = hshj1426-droid/mabed)
+  Updater.java       새 버전 내려받아 설치 + 자동 업데이트 (서비스가 30분마다 autoTick)
+  InstallReceiver.java 설치 결과 받기 — 확인이 필요하면 창 또는 알림
   Ui.java            색·버튼·카드·배율
   BedView.java       침대 옆모습 그림 (mini 모드는 자세 버튼 아이콘)
   Slider.java        직접 그린 슬라이더

@@ -49,6 +49,7 @@ public class MainActivity extends Activity {
     private TextView updView;
     private View updCard;
     private Updates.Info pending;
+    private boolean installAfterPerm = false;   // 설치 허용 화면에 다녀오는 중
     private LinearLayout tabRow;
     private final Map<String, Slider> bars = new LinkedHashMap<>();
     private final List<Object[]> poses = new ArrayList<>();   // {BedView 아이콘, 숫자 글자, 상체값, 다리값}
@@ -129,7 +130,13 @@ public class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        App.uiVisible = true;
         startTicking();
+        // '이 출처 허용'을 켜고 돌아왔으면 하던 설치를 이어서 한다
+        if (installAfterPerm && pending != null && Updater.canInstall(this)) {
+            installAfterPerm = false;
+            startUpdate(pending);
+        }
         long last = prefs.getLong("updCheckedAt", 0);
         if (System.currentTimeMillis() - last > 12L * 60 * 60 * 1000) checkUpdate(false);
         // 배터리 제한을 푼 뒤 돌아온 경우 설정 화면의 그 줄을 치운다
@@ -138,6 +145,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onPause() {
         super.onPause();
+        App.uiVisible = false;
         stopTicking();   // 서버와 서비스는 계속 돌고, 화면 갱신만 멈춘다
     }
 
@@ -727,8 +735,8 @@ public class MainActivity extends Activity {
         LinearLayout updBox = u.col();
         updView = u.text("", 13.5f, u.fg, true);
         updBox.addView(updView);
-        Button updBtn = u.btn("받으러 가기", u.ok, 0xFFFFFFFF, 0, 14, 12,
-                new Runnable(){ public void run(){ openUpdate(); }});
+        Button updBtn = u.btn("지금 설치", u.ok, 0xFFFFFFFF, 0, 14, 12,
+                new Runnable(){ public void run(){ if (pending != null) startUpdate(pending); }});
         LinearLayout.LayoutParams ubp = new LinearLayout.LayoutParams(-1, -2);
         ubp.topMargin = u.dp(10);
         ubp.bottomMargin = 0;
@@ -1425,11 +1433,26 @@ public class MainActivity extends Activity {
 
         setBox.addView(u.head("앱"));
         LinearLayout g4 = group();
-        g4.addView(linkRow("새 버전 확인", "지금 " + Updates.installed(this),
+        g4.addView(linkRow("새 버전 확인하고 설치", "지금 " + Updates.installed(this),
                 new Runnable(){ public void run(){ checkUpdate(true); }}));
+        g4.addView(u.hair());
+        final boolean auto = Updater.autoOn(prefs);
+        g4.addView(linkRow("자동 업데이트", auto ? "켜짐" : "꺼짐", new Runnable(){ public void run(){
+            prefs.edit().putBoolean("autoUpd", !auto).apply();
+            toast(auto ? "자동 업데이트를 껐습니다" : "자동 업데이트를 켰습니다");
+            renderSettings(); }}));
+        if (!Updater.canInstall(this)) {
+            g4.addView(u.hair());
+            g4.addView(linkRow("앱 설치 허용 (처음 한 번)", "필요", new Runnable(){ public void run(){
+                openInstallPerm(); }}));
+        }
         g4.addView(u.hair());
         g4.addView(linkRow("연결 기록 보기", null, new Runnable(){ public void run(){ showLog(); }}));
         setBox.addView(g4);
+        setBox.addView(u.note(auto
+                ? "자동 업데이트: 6시간마다 새 버전을 확인하고, 30분 넘게 침대를 안 쓸 때 설치합니다. "
+                  + "처음 한 번은 설치 확인을 눌러야 하고, 그다음부터는 알아서 설치됩니다. 설치하는 몇 초 동안은 침대 연결이 끊겼다 다시 붙습니다."
+                : "자동 업데이트가 꺼져 있습니다. 새 버전은 위 '새 버전 확인하고 설치'로 설치하세요."));
         setBox.addView(u.note("문제가 생기면 연결 기록 화면을 캡처해서 보내주세요."));
     }
 
@@ -1738,6 +1761,7 @@ public class MainActivity extends Activity {
     private boolean sendPin(final String pin, final String value) {
         final LanPeers.RemoteBed r = curRemote();
         final String k = curToken() + "|" + pin;
+        App.lastCmdAt = System.currentTimeMillis();     // 쓰는 중에는 자동 업데이트를 미룬다
         if (r != null) {
             if (!r.online) { toast("그 침대가 지금 꺼져 있습니다"); return false; }
             rememberSent(k, value);
@@ -1798,13 +1822,57 @@ public class MainActivity extends Activity {
                 prefs.edit().putLong("updCheckedAt", System.currentTimeMillis()).apply();
                 if (n != null) {
                     showUpdate(n);
-                    if (manual && screen == SCR_SETTINGS) {
-                        closeSettings();
-                        toast("새 버전 " + n.version + " 이 있습니다");
-                    }
+                    if (manual) askInstall(n);
                 }
                 else if (manual) toast("지금이 최신 버전입니다 (" + Updates.installed(MainActivity.this) + ")");
             } });
+    }
+
+    private void askInstall(final Updates.Info n) {
+        String note = n.notes == null ? "" : n.notes.trim();
+        if (note.length() > 300) note = note.substring(0, 300) + "…";
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("새 버전 " + n.version)
+            .setMessage((note.isEmpty() ? "" : note + "\n\n")
+                    + "지금 " + Updates.installed(this) + " → " + n.version + "\n"
+                    + "설치하는 동안 앱이 잠깐 닫히고, 침대 연결이 몇 초 끊겼다 다시 붙습니다.")
+            .setPositiveButton("설치", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) { startUpdate(n); } })
+            .setNegativeButton("나중에", null).show();
+    }
+
+    /** 새 버전을 앱 안에서 받아 설치한다 */
+    private void startUpdate(final Updates.Info n) {
+        if (!Updater.hasApk(n)) { openUpdate(); return; }       // APK 가 없는 릴리스 — 브라우저로
+        if (!Updater.canInstall(this)) {
+            new android.app.AlertDialog.Builder(this)
+                .setTitle("처음 한 번만 허용해주세요")
+                .setMessage("안드로이드는 플레이스토어 밖의 앱이 스스로 업데이트하려면 허용을 한 번 받아야 합니다.\n\n"
+                        + "다음 화면에서 '이 출처 허용'(또는 '출처를 알 수 없는 앱 설치')을 켜고\n뒤로 돌아오면 바로 설치를 이어갑니다.")
+                .setPositiveButton("허용하러 가기", new android.content.DialogInterface.OnClickListener() {
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        installAfterPerm = true; openInstallPerm(); } })
+                .setNegativeButton("취소", null).show();
+            return;
+        }
+        if (updView != null) updView.setText("새 버전 " + n.version + " 내려받는 중…");
+        toast("내려받는 중…");
+        bg(new Runnable(){ public void run(){
+            try {
+                Updater.downloadAndInstall(MainActivity.this, n);
+                // 이후는 안드로이드 설치 창(처음 한 번) 또는 조용히 설치 → 앱이 새로 시작된다
+            } catch (final Exception e) {
+                post(new Runnable(){ public void run(){
+                    if (updView != null) showUpdate(n);
+                    toast("설치하지 못했습니다 · " + e.getMessage());
+                }});
+            }
+        }});
+    }
+
+    private void openInstallPerm() {
+        try { startActivity(Updater.permIntent(this)); }
+        catch (Throwable t) { installAfterPerm = false; toast("이 폰에서는 설정 화면을 열 수 없습니다"); }
     }
 
     private void showUpdate(Updates.Info n) {

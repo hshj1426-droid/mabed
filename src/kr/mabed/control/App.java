@@ -18,6 +18,12 @@ public class App {
     /** 침대 목록이 화면 밖(이웃 폰의 이름 바꾸기 등)에서 바뀌면 올라간다 */
     public static volatile int bedsRev = 0;
 
+    /** 화면이 보이는 중인가 (설치 확인 창을 바로 띄울지, 알림으로 부탁할지) */
+    public static volatile boolean uiVisible = false;
+
+    /** 마지막으로 침대에 명령을 보낸 시각 — 쓰는 중에는 자동 업데이트를 미룬다 */
+    public static volatile long lastCmdAt = 0;
+
     public static synchronized BedServer server() {
         if (SERVER == null) {
             SERVER = new BedServer(new BedServer.Listener() {
