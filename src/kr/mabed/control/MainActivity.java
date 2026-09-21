@@ -50,6 +50,7 @@ public class MainActivity extends Activity {
     private View updCard;
     private Updates.Info pending;
     private boolean installAfterPerm = false;   // 설치 허용 화면에 다녀오는 중
+    private boolean installAfterSecurity = false;   // 보안 설정(삼성 '보안 위험 자동 차단')에 다녀오는 중
     private String askedVer = "";               // 이번에 이미 물어본 새 버전
     private boolean updWaiting = false;         // 설치를 넘기고 안드로이드의 답을 기다리는 중
     private LinearLayout tabRow;
@@ -162,11 +163,19 @@ public class MainActivity extends Activity {
         App.startNet(this);
         lan.setListening(true);     // 화면을 볼 때만 이웃 폰 신호를 받는다 (배터리)
         startTicking();
-        // '이 출처 허용'을 켜고 돌아왔으면 하던 설치를 이어서 한다
-        if (installAfterPerm && pending != null && Updater.canInstall(this)) {
+        // '이 출처 허용'을 켜러 갔다 돌아왔다 — 켜졌으면 설치를 이어서, 못 켰으면(삼성 자동 차단으로 회색) 안내
+        if (installAfterPerm && pending != null) {
             installAfterPerm = false;
-            startUpdate(pending);
+            if (Updater.canInstall(this)) startUpdate(pending);
+            else installBlockedHelp(true);
         }
+        // 보안 설정(자동 차단 끄기)에 다녀왔다 — 설치를 이어서
+        else if (installAfterSecurity) {
+            installAfterSecurity = false;
+            if (pending != null) startUpdate(pending); else checkUpdate(true);
+        }
+        // 설치 화면에서 돌아왔다 — 버전이 그대로면 막혔을 수 있다
+        else checkInstallOutcome();
         // 새 버전 확인은 앱을 켤 때만 (배경에서 주기적으로 확인하지 않는다 — 배터리).
         // 뒤로 보냈다가 다시 연 것도 '켠 것'으로 치되, 1시간 안에 다시 묻지는 않는다.
         long last = prefs.getLong("updCheckedAt", 0);
@@ -741,9 +750,23 @@ public class MainActivity extends Activity {
         top.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
         statusDot = u.pill("", u.muted, u.card, u.line);
         top.addView(statusDot, new LinearLayout.LayoutParams(-2, -2));
-        ImageView gear = u.iconBtn(Glyph.GEAR, u.fg, "설정", new Runnable(){ public void run(){ openSettings(); }});
-        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(u.rawDp(44), u.rawDp(44));
-        gp.leftMargin = u.dp(6);
+        // 설정 버튼 — 톱니 + '설정' 글자 (아이콘만 있을 땐 해·밝기 버튼처럼 보였다)
+        LinearLayout gear = new LinearLayout(this);
+        gear.setOrientation(LinearLayout.HORIZONTAL);
+        gear.setGravity(Gravity.CENTER_VERTICAL);
+        gear.setPadding(u.dp(10), 0, u.dp(12), 0);
+        gear.setMinimumHeight(u.rawDp(40));
+        ImageView gi = new ImageView(this);
+        gi.setImageDrawable(new Glyph(Glyph.GEAR, u.fg, u.dp(18)));
+        gear.addView(gi, new LinearLayout.LayoutParams(u.dp(18), u.dp(18)));
+        TextView gt = u.text("설정", 13.5f, u.fg, true);
+        gt.setPadding(u.dp(6), 0, 0, 0);
+        gear.addView(gt);
+        u.ripple(gear, u.card, u.line, 20);
+        gear.setContentDescription("설정");
+        gear.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { openSettings(); }});
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(-2, u.rawDp(40));
+        gp.leftMargin = u.dp(8);
         top.addView(gear, gp);
         outer.addView(top);
 
@@ -917,7 +940,7 @@ public class MainActivity extends Activity {
         c.addView(u.head("알람"));
         alarmBox = u.col();
         c.addView(alarmBox);
-        c.addView(u.note("이름 바꾸기 · 테이블 · 각도 맞추기 · 침대 추가는 오른쪽 위 톱니(설정)에 있습니다."));
+        c.addView(u.note("이름 바꾸기 · 테이블 · 각도 맞추기 · 침대 추가는 오른쪽 위 '설정'에 있습니다."));
         c.addView(spacer(6));
 
         // ── 정지 ──
@@ -1635,6 +1658,9 @@ public class MainActivity extends Activity {
         LinearLayout g4 = group();
         g4.addView(linkRow("새 버전 확인하고 설치", "지금 " + Updates.installed(this),
                 new Runnable(){ public void run(){ checkUpdate(true); }}));
+        g4.addView(u.hair());
+        g4.addView(linkRow("업데이트가 막힐 때", isSamsung() ? "보안 위험 자동 차단" : null,
+                new Runnable(){ public void run(){ installBlockedHelp(false); }}));
         if (!Updater.canInstall(this)) {
             g4.addView(u.hair());
             g4.addView(linkRow("앱 설치 허용 (처음 한 번)", "필요", new Runnable(){ public void run(){
@@ -2863,6 +2889,9 @@ public class MainActivity extends Activity {
                     // 안드로이드 기본 설치 화면 ("업데이트할까요?") — 브라우저로 받아 설치할 때와 같은 화면
                     try {
                         startActivity(Updater.installIntent());
+                        // 돌아왔을 때 버전이 그대로면 '막혔나요?' 안내를 띄우려고 기록해 둔다
+                        prefs.edit().putLong("updLaunchAt", System.currentTimeMillis())
+                                    .putString("updFromVer", Updates.installed(MainActivity.this)).apply();
                         toast("'업데이트'를 누르면 끝납니다");
                     } catch (Throwable t) {
                         App.addLog("업데이트", "설치 화면 열기 실패 · " + t);
@@ -2878,6 +2907,59 @@ public class MainActivity extends Activity {
                 }});
             }
         }});
+    }
+
+    /** 설치 화면에서 돌아왔을 때: 버전이 바뀌었으면 완료, 그대로면 막혔을 수 있으니 안내 (30분 안에 돌아온 경우만) */
+    private void checkInstallOutcome() {
+        long at = prefs.getLong("updLaunchAt", 0);
+        if (at == 0) return;
+        String from = prefs.getString("updFromVer", "");
+        prefs.edit().remove("updLaunchAt").remove("updFromVer").apply();
+        String now = Updates.installed(this);
+        if (!now.equals(from)) { toast("업데이트 완료 · " + now); return; }
+        if (System.currentTimeMillis() - at > 30L * 60 * 1000) return;
+        installBlockedHelp(false);
+    }
+
+    private static boolean isSamsung() {
+        return "samsung".equalsIgnoreCase(Build.MANUFACTURER);
+    }
+
+    /** 설치가 막혔을 때 — 경로 설명만 하지 않고, 그 설정 화면을 바로 연다.
+     *  삼성 One UI 6+ 의 '보안 위험 자동 차단'이 켜져 있으면 스토어 밖 앱 설치가 막히고, '이 출처 허용'도 회색으로 잠긴다.
+     *  자동 차단 화면으로 가는 공개된 주소는 없어서, 그 바로 앞인 '보안 및 개인정보 보호'(ACTION_SECURITY_SETTINGS)를 연다.
+     *  permScreen = '이 출처 허용'을 켜러 갔다가 못 켜고 돌아온 경우 */
+    private void installBlockedHelp(boolean permScreen) {
+        if (!alive()) return;
+        String msg;
+        if (isSamsung()) {
+            msg = (permScreen ? "'이 출처 허용'이 켜지지 않았습니다 (스위치가 회색이었나요?).\n\n"
+                              : "업데이트가 설치되지 않았습니다.\n\n")
+                + "삼성 폰의 '보안 위험 자동 차단'이 켜져 있으면 플레이스토어 밖의 앱은 설치·업데이트가 막힙니다.\n\n"
+                + "1. 아래 [보안 설정 열기] → '보안 및 개인정보 보호' 화면이 열립니다\n"
+                + "2. '보안 위험 자동 차단'을 눌러 끕니다\n"
+                + "3. 이 앱으로 돌아오면 설치를 바로 이어서 합니다\n\n"
+                + "업데이트가 끝나면 다시 켜도 됩니다 (그럼 다음 업데이트 때 또 꺼야 합니다).";
+        } else {
+            msg = (permScreen ? "'이 출처 허용'이 켜지지 않았습니다.\n\n" : "업데이트가 설치되지 않았습니다.\n\n")
+                + "폰의 보안 설정이 스토어 밖 앱 설치를 막고 있을 수 있습니다. [보안 설정 열기]에서 관련 차단을 끄고 돌아오면 이어서 설치합니다.";
+        }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("설치가 막혔나요?")
+            .setMessage(msg)
+            .setPositiveButton("보안 설정 열기", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) { openSecuritySettings(); } })
+            .setNeutralButton("브라우저로 받기", new android.content.DialogInterface.OnClickListener() {
+                public void onClick(android.content.DialogInterface d, int w) { openUpdate(); } })
+            .setNegativeButton("닫기", null).show();
+    }
+
+    private void openSecuritySettings() {
+        installAfterSecurity = true;
+        try { startActivity(new Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS)); return; }
+        catch (Throwable ignored) {}
+        try { startActivity(new Intent(android.provider.Settings.ACTION_SETTINGS)); }
+        catch (Throwable t) { installAfterSecurity = false; toast("설정 화면을 열 수 없습니다"); }
     }
 
     /** 앱 안 업데이트가 안 됐을 때 — 이유를 보여주고, 브라우저로 받는 길을 연다 (끝없이 기다리게 두지 않는다) */
@@ -2909,9 +2991,10 @@ public class MainActivity extends Activity {
     }
 
     private void openUpdate() {
-        if (pending == null) return;
+        // 새 버전 정보가 없으면(앱이 새로 켜진 뒤 등) 최신 릴리스 페이지로
+        String url = pending != null ? pending.url : "https://github.com/" + Updates.REPO + "/releases/latest";
         try {
-            startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(pending.url)));
+            startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)));
         } catch (Throwable t) { toast("인터넷 창을 열 수 없습니다"); }
     }
 

@@ -77,15 +77,20 @@ public class Glyph extends Drawable {
                 break;
             }
             case GEAR: {
+                // 톱니바퀴: 굵은 고리 + 네모난 톱니 8개 + 가운데 구멍.
+                // (5.12 까지는 작은 원 + 짧은 선 8개라 해·밝기 아이콘처럼 보였다 — 사용자 지적)
                 p.setStyle(Paint.Style.STROKE);
-                p.setStrokeWidth(s * 0.10f);
-                c.drawCircle(cx, cy, s * 0.17f, p);
+                p.setStrokeCap(Paint.Cap.BUTT);
+                p.setStrokeWidth(s * 0.14f);
+                c.drawCircle(cx, cy, s * 0.235f, p);                      // 고리 (안쪽이 뚫린 채로 남는다)
+                p.setStrokeWidth(s * 0.15f);
                 for (int i = 0; i < 8; i++) {
-                    double a = Math.PI * i / 4.0;
+                    double a = Math.PI * i / 4.0 + Math.PI / 8.0;
                     float dx = (float) Math.cos(a), dy = (float) Math.sin(a);
-                    c.drawLine(cx + dx * s * 0.27f, cy + dy * s * 0.27f,
-                               cx + dx * s * 0.38f, cy + dy * s * 0.38f, p);
+                    c.drawLine(cx + dx * s * 0.27f, cy + dy * s * 0.27f,  // 톱니 — 고리에 붙은 짧고 굵은 네모
+                               cx + dx * s * 0.43f, cy + dy * s * 0.43f, p);
                 }
+                p.setStrokeCap(Paint.Cap.ROUND);
                 break;
             }
             case BACK: {   // 왼쪽 화살표 ←
