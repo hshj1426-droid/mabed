@@ -2016,10 +2016,35 @@ public class MainActivity extends Activity {
             public void onCancel() { hv.setText(fmt("11", Alarms.height(prefs, tok))); }
         });
         hb.addView(hs, new LinearLayout.LayoutParams(-1, u.dp(46)));
+
+        // 알람 뒤 다시 눕히기 — 침대는 알람의 '종료' 시각에 다시 내려간다 (5.11.0 사용자 확인)
+        hb.addView(u.text("알람 뒤 다시 눕히기", 14, u.muted, true));
+        LinearLayout dr = u.row(4);
+        dr.setPadding(0, u.dp(8), 0, 0);
+        final List<Button> downBtns = new ArrayList<>();
+        final String[] shortNames = { "안 함", "5분", "10분", "30분", "1시간" };
+        for (int x = 0; x < Alarms.DOWN_CHOICES.length; x++) {
+            final int sec = Alarms.DOWN_CHOICES[x], idx = x;
+            Button bt = u.btn(shortNames[x], u.bg, u.fg, u.line, 12.5f, 8, null);
+            bt.setMinWidth(0); bt.setMinimumWidth(0);
+            bt.setOnClickListener(new View.OnClickListener() { public void onClick(View v) {
+                Alarms.setDown(prefs, tok, sec);
+                paintChoice(downBtns, idx);
+                pushAlarms(tok);
+                toast(sec == 0 ? "알람 뒤 올라간 채로 둡니다" : "알람 " + Alarms.DOWN_NAMES[idx] + " 다시 눕힙니다");
+            }});
+            downBtns.add(bt);
+            dr.addView(bt, u.w(1, 2));
+        }
+        int cur = 0;
+        for (int x = 0; x < Alarms.DOWN_CHOICES.length; x++) if (Alarms.DOWN_CHOICES[x] == Alarms.down(prefs, tok)) cur = x;
+        paintChoice(downBtns, cur);
+        hb.addView(dr);
         g.addView(hb);
         alarmBox.addView(g);
         alarmBox.addView(u.note("알람은 침대가 스스로 실행합니다. 폰이 꺼져 있어도 됩니다. "
-                + "그 시각이 되면 상체를 위 높이까지 올립니다. 알람 1·2 는 매주 그 요일마다, 빠른 알람은 한 번만."));
+                + "그 시각이 되면 상체를 위 높이까지 올리고, '다시 눕히기'를 골랐으면 그만큼 뒤에 내려갑니다. "
+                + "알람 1·2 는 매주 그 요일마다, 빠른 알람은 한 번만."));
     }
 
     // ── 빠른 알람 ("30분 뒤") — 침대의 알람 3 자리 ─────────────

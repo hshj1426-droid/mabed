@@ -17,9 +17,19 @@ public class Alarms {
 
     /** 반복 알람 개수 — 침대의 알람 1·2. (알람 3 자리는 빠른 알람이 쓴다, 5.10.2) */
     public static final int COUNT = 2;
-    /** 침대 알람의 시작~종료 간격. 시험에서 동작이 확인된 1분으로 고정한다 — 침대는 시작 시각에 평소 속도로 올라갈 뿐,
-     *  '몇 분에 걸쳐'는 의미가 없어서 사용자 선택지에서 뺐다. (종료 때 무엇을 하는지는 아직 확인 전) */
-    public static final int WINDOW = 60;
+    /** 침대 알람은 시작 시각에 올라가고, **종료 시각에 다시 내려간다** (5.11.0 사용자 확인 — 1분 뒤 내려감).
+     *  그래서 종료 = '다시 눕히기' 시각이다. 사용자가 고른다: 0 = 안 눕힘(기본), 아니면 몇 초 뒤. */
+    public static final int[] DOWN_CHOICES = { 0, 300, 600, 1800, 3600 };
+    public static final String[] DOWN_NAMES = { "안 함", "5분 뒤", "10분 뒤", "30분 뒤", "1시간 뒤" };
+
+    /** 알람 뒤 다시 눕히기 (초). 0 = 안 눕힘 */
+    public static int down(SharedPreferences p, String token) { return p.getInt(k(token, "alDown"), 0); }
+    public static void setDown(SharedPreferences p, String token, int sec) { p.edit().putInt(k(token, "alDown"), sec).apply(); }
+
+    /** 종료(= 다시 눕힐) 시각. '안 눕힘'이면 다음 날 시작 1분 전으로 — 그때는 보통 이미 누워 있어서 아무 일도 없다 */
+    static int stopFor(int start, int down) {
+        return down <= 0 ? (start + 86400 - 60) % 86400 : (start + down) % 86400;
+    }
     public static final String[] DAY_NAMES = { "월", "화", "수", "목", "금", "토", "일" };
 
     /** 알람 하나 */
@@ -33,13 +43,17 @@ public class Alarms {
     // 침대 알람은 '매주 그 요일' 반복이라, 울린 뒤에 앱이 꺼야 한다.
     // 울린 뒤 침대가 움직이며 다시 접속하면 push 가 그 자리를 끈다. (앱을 일주일 넘게 안 열면 한 번 더 울릴 수는 있다)
 
-    /** 울린 뒤 이만큼은 켜 둔다 — 그 시각 딱 맞춰 끄면 침대가 울리기 전에 꺼버릴 수 있다 */
-    static final long QUICK_KEEP = WINDOW * 1000L + 90000L;
+    /** 울린 뒤 이만큼은 켜 둔다 — 너무 일찍 끄면 올라가기 전에, 또는 '다시 눕히기' 전에 꺼버린다.
+     *  안 눕힘이면 올라간 뒤 2분 반, 눕힘이면 눕힐 시각 뒤 1분 반 */
+    static long quickKeep(SharedPreferences p, String token) {
+        int d = down(p, token);
+        return (d <= 0 ? 60 : d) * 1000L + 90000L;
+    }
 
-    /** 빠른 알람 시각(밀리초). 없거나, 울리고 2분 반이 지났으면 0 */
+    /** 빠른 알람 시각(밀리초). 없거나, 다 끝났으면 0 */
     public static long quickAt(SharedPreferences p, String token) {
         long at = p.getLong(k(token, "qaAt"), 0);
-        if (at != 0 && System.currentTimeMillis() > at + QUICK_KEEP) { p.edit().remove(k(token, "qaAt")).apply(); return 0; }
+        if (at != 0 && System.currentTimeMillis() > at + quickKeep(p, token)) { p.edit().remove(k(token, "qaAt")).apply(); return 0; }
         return at;
     }
 
@@ -113,15 +127,15 @@ public class Alarms {
         return out;
     }
 
-    /** 사용자가 정한 알람(한국 시각)을 기판 시계 방식에 맞는 값으로 */
-    static String valueFor(A a, String clock) {
+    /** 사용자가 정한 알람(한국 시각)을 기판 시계 방식에 맞는 값으로. down = 다시 눕히기(초, 0 = 안 함) */
+    static String valueFor(A a, String clock, int down) {
         int off = tzOffset();
         if (clock.equals("utc")) {
             int s = a.start - off, shift = 0;
             if (s < 0) { s += 86400; shift = -1; } else if (s >= 86400) { s -= 86400; shift = 1; }
-            return timeInput(s, (s + WINDOW) % 86400, rotate(a.days, shift), "UTC", 0);
+            return timeInput(s, stopFor(s, down), rotate(a.days, shift), "UTC", 0);
         }
-        return timeInput(a.start, (a.start + WINDOW) % 86400, a.days, TimeZone.getDefault().getID(), off);
+        return timeInput(a.start, stopFor(a.start, down), a.days, TimeZone.getDefault().getID(), off);
     }
 
     /** 시험 알람이 켜진 채 남았을 수 있다는 표시 (시험 끝에 연결이 끊겨 못 껐을 때) */
@@ -145,15 +159,16 @@ public class Alarms {
             return;
         }
         markDirty(p, d.token, false);   // 아래에서 켜기/끄기를 모두 다시 쓴다
+        int down = down(p, d.token);
         for (int i = 1; i <= COUNT; i++) {
             A a = get(p, d.token, i);
-            s.write(d, String.valueOf(i), valueFor(a, clock));
+            s.write(d, String.valueOf(i), valueFor(a, clock, down));
             s.write(d, String.valueOf(4 + i), a.on ? "1" : "0");
         }
         // 알람 3 자리 = 빠른 알람. 없거나 이미 지났으면 끈다 (울린 뒤 다시 접속할 때 여기서 꺼진다)
         long qa = quickAt(p, d.token);
         A q = qa != 0 ? quickAsAlarm(qa) : new A();
-        s.write(d, "3", valueFor(q, clock));
+        s.write(d, "3", valueFor(q, clock, down));
         s.write(d, "7", qa != 0 ? "1" : "0");
         s.write(d, "12", String.valueOf(height(p, d.token)));
         App.addLog("알람", "침대에 알람 설정을 보냈습니다" + (qa != 0 ? " · 빠른 알람 " + hm(q.start) : ""));
