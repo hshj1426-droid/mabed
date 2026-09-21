@@ -1,0 +1,70 @@
+name: APK 빌드
+
+# 깃허브에서 릴리스를 발행하면(태그 예: v5.3.0) 자동으로 APK를 만들어 그 릴리스에 붙인다
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '버전 (예: 5.3.0)'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: SDK 준비
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: 서명 키 복원
+        run: |
+          mkdir -p build
+          echo "${{ secrets.KEYSTORE_B64 }}" | base64 -d > build/mabed.jks
+          test -s build/mabed.jks
+
+      - name: 버전 정하기
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          elif [ -n "${{ github.event.release.tag_name }}" ]; then
+            V="${{ github.event.release.tag_name }}"
+          else
+            V="${GITHUB_REF_NAME}"
+          fi
+          echo "v=${V#v}" >> $GITHUB_OUTPUT
+
+      - name: 빌드
+        env:
+          KS_PASS: ${{ secrets.KEYSTORE_PASS }}
+        run: ./build.sh "${{ steps.ver.outputs.v }}"
+
+      - name: 확인
+        run: |
+          $ANDROID_HOME/build-tools/35.0.0/aapt2 dump badging \
+            "build/mabed-${{ steps.ver.outputs.v }}.apk" | head -3
+
+      - name: 릴리스에 붙이기
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: build/mabed-${{ steps.ver.outputs.v }}.apk
+
+      - name: 결과물 보관
+        uses: actions/upload-artifact@v4
+        with:
+          name: mabed-${{ steps.ver.outputs.v }}
+          path: build/mabed-${{ steps.ver.outputs.v }}.apk

@@ -1,0 +1,8 @@
+build/
+*.apk
+*.idsig
+*.jks
+*.keystore
+
+# 개인정보·비밀번호가 들어 있는 인수인계서 — 공개 저장소에 올리지 않는다
+HANDOVER.md
