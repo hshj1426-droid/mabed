@@ -12,6 +12,8 @@ public class BootReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context c, Intent i) {
         try {
             SharedPreferences p = c.getSharedPreferences("mabed", Context.MODE_PRIVATE);
+            // '앱을 닫아도 대기'를 켠 경우에만 부팅·업데이트 뒤 되살린다 (5.8.0 — 기본은 앱을 켤 때만 동작)
+            if (!p.getBoolean("stayOn", false)) return;
             // 사용자가 서버를 켜둔 상태였고, 등록된 침대가 있을 때만 되살린다
             if (!p.getBoolean("serverOn", false)) return;
             String beds = p.getString("beds", "");

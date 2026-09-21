@@ -53,6 +53,10 @@ public class MainActivity extends Activity {
     private String askedVer = "";               // 이번에 이미 물어본 새 버전
     private boolean updWaiting = false;         // 설치를 넘기고 안드로이드의 답을 기다리는 중
     private LinearLayout tabRow;
+    private View heroCard, heroPrev, heroNext;
+    private TextView heroName, heroSub, heroDots;
+    /** 지난번에 보던 침대 — 이웃 침대면 목록이 도착했을 때 그리로 옮겨준다 */
+    private String restoreTok = "";
     private final Map<String, Slider> bars = new LinkedHashMap<>();
     private final List<Object[]> poses = new ArrayList<>();   // {BedView 아이콘, 숫자 글자, 상체값, 다리값}
 
@@ -100,6 +104,10 @@ public class MainActivity extends Activity {
         migrateOld();
         seenRev = App.bedsRev;
         sel = Math.min(prefs.getInt("sel", 0), Math.max(0, beds.size() - 1));
+        // 지난번에 보던 침대부터. 이웃 침대였다면 이웃 목록이 도착할 때 옮겨간다 (applyRemotes)
+        restoreTok = prefs.getString("selToken", "");
+        for (int i = 0; i < beds.size(); i++)
+            if (beds.get(i).token.equals(restoreTok)) { sel = i; restoreTok = ""; }
 
         root = new FrameLayout(this);
         root.setBackgroundColor(u.bg);
@@ -146,6 +154,10 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         App.uiVisible = true;
+        // 앱을 켜면 다시 연결한다 — 닫은 뒤 5분이 지나 모두 꺼져 있었을 수 있다
+        ServerService.appOpened();
+        if (!App.server().isRunning()) startServer();
+        App.startNet(this);
         lan.setListening(true);     // 화면을 볼 때만 이웃 폰 신호를 받는다 (배터리)
         startTicking();
         // 뒤에 있는 동안 설치 확인이 필요해졌다 (알림이 막혀 있어도 앱을 열면 이어서)
@@ -168,6 +180,12 @@ public class MainActivity extends Activity {
         App.uiVisible = false;
         lan.setListening(false);
         stopTicking();   // 서버와 서비스는 계속 돌고, 화면 갱신만 멈춘다
+    }
+
+    @Override protected void onStop() {
+        super.onStop();
+        // 화면이 안 보인다 — 5분 안에 돌아오지 않으면 침대 대기·이웃 연결을 모두 끈다 (설정에서 바꿀 수 있음)
+        ServerService.appClosed();
     }
 
     // ── 뒤로가기 ───────────────────────────────────────
@@ -267,6 +285,7 @@ public class MainActivity extends Activity {
             mainPane = buildMain();
             root.addView(mainPane);
             wizBox = null;
+            saveSel();
         }
         refresh();
     }
@@ -776,6 +795,29 @@ public class MainActivity extends Activity {
         hero.setPadding(u.dp(8), u.dp(16), u.dp(8), u.dp(14));
         hero.setBackground(u.grad(u.card, u.dark ? 0xFF2A241D : 0xFFF7F1E8, 22));
         hero.setElevation(u.dp(2));
+
+        // 침대 이름 + ‹ › — 침대가 둘 이상이면 여기서 넘기거나, 카드를 옆으로 쓸어서 바꾼다
+        LinearLayout hh = new LinearLayout(this);
+        hh.setOrientation(LinearLayout.HORIZONTAL);
+        hh.setGravity(Gravity.CENTER_VERTICAL);
+        heroPrev = u.iconBtn(Glyph.BACK, u.fg, "이전 침대", new Runnable(){ public void run(){ swipeTo(-1); }});
+        hh.addView(heroPrev, new LinearLayout.LayoutParams(u.rawDp(44), u.rawDp(44)));
+        LinearLayout nameCol = u.col();
+        nameCol.setGravity(Gravity.CENTER_HORIZONTAL);
+        heroName = u.text("", 17, u.fg, true);
+        heroName.setGravity(Gravity.CENTER);
+        heroName.setSingleLine(true);
+        heroName.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        nameCol.addView(heroName);
+        heroSub = u.text("", 11.5f, u.muted, false);
+        heroSub.setGravity(Gravity.CENTER);
+        heroSub.setSingleLine(true);
+        nameCol.addView(heroSub);
+        hh.addView(nameCol, new LinearLayout.LayoutParams(0, -2, 1f));
+        heroNext = u.iconBtn(Glyph.CHEVRON, u.fg, "다음 침대", new Runnable(){ public void run(){ swipeTo(+1); }});
+        hh.addView(heroNext, new LinearLayout.LayoutParams(u.rawDp(44), u.rawDp(44)));
+        hero.addView(hh, new LinearLayout.LayoutParams(-1, -2));
+
         bedView = new BedView(this, u.line, u.accent, u.fg, u.muted);
         int bh = (int)(u.screenH * 0.155f);
         if (bh < u.dp(112)) bh = u.dp(112);
@@ -785,10 +827,33 @@ public class MainActivity extends Activity {
         angleText.setGravity(Gravity.CENTER);
         angleText.setPadding(0, u.dp(12), 0, u.dp(2));
         hero.addView(angleText);
+        heroDots = u.text("", 10f, u.muted, false);
+        heroDots.setGravity(Gravity.CENTER);
+        heroDots.setLetterSpacing(0.3f);
+        heroDots.setPadding(0, u.dp(6), 0, 0);
+        hero.addView(heroDots);
         LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(-1, -2);
         hp.bottomMargin = u.dp(6);
         hero.setLayoutParams(hp);
         c.addView(hero);
+        heroCard = hero;
+
+        // 카드를 옆으로 쓸면 다음/이전 침대 (세로로 쓸면 평소처럼 화면이 내려간다)
+        final GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onDown(MotionEvent e) { return true; }
+            @Override public boolean onFling(MotionEvent a, MotionEvent b, float vx, float vy) {
+                if (a == null || b == null || bedCount() < 2) return false;
+                float dx = b.getX() - a.getX(), dy = b.getY() - a.getY();
+                if (Math.abs(dx) > u.dp(50) && Math.abs(dx) > Math.abs(dy) * 1.3f) {
+                    swipeTo(dx < 0 ? +1 : -1);
+                    return true;
+                }
+                return false;
+            }
+        });
+        hero.setOnTouchListener(new View.OnTouchListener() {
+            public boolean onTouch(View v, MotionEvent e) { return gd.onTouchEvent(e); }
+        });
 
         // ── 자세 ──
         c.addView(u.head("자세"));
@@ -916,28 +981,76 @@ public class MainActivity extends Activity {
         if (total < 2) { tabRow.setVisibility(View.GONE); return; }
         tabRow.setVisibility(View.VISIBLE);
         float ts = total >= 4 ? 11.5f : 13f;
-        for (int i = 0; i < beds.size(); i++) {
+        int cur = curIndex();
+        for (int i = 0; i < total; i++) {
             final int idx = i;
-            boolean on = !selRemote && i == sel;
-            Button t = u.btn(beds.get(i).name, on ? u.accent : u.card,
+            boolean on = i == cur;
+            String nm = i < beds.size() ? beds.get(i).name : remotes.get(i - beds.size()).name + " ↗";
+            Button t = u.btn(nm, on ? u.accent : u.card,
                     on ? 0xFFFFFFFF : u.fg, on ? 0 : u.line, ts, 12,
-                    new Runnable(){ public void run(){
-                        sel = idx; selRemote = false; prefs.edit().putInt("sel", sel).apply();
-                        switched(); }});
+                    new Runnable(){ public void run(){ selectIndex(idx); }});
             tab(t);
             tabRow.addView(t, u.w(1, 3));
         }
-        for (int i = 0; i < remotes.size(); i++) {
-            final int idx = i;
-            boolean on = selRemote && i == sel;
-            Button t = u.btn(remotes.get(i).name + " ↗", on ? u.accent : u.card,
-                    on ? 0xFFFFFFFF : u.fg, on ? 0 : u.line, ts, 12,
-                    new Runnable(){ public void run(){
-                        sel = idx; selRemote = true;
-                        switched(); }});
-            tab(t);
-            tabRow.addView(t, u.w(1, 3));
-        }
+    }
+
+    // ── 침대 넘기기 (내 침대 → 이웃 침대 순서로 한 줄) ──
+    private int bedCount() { return beds.size() + remotes.size(); }
+
+    private int curIndex() { return selRemote ? beds.size() + sel : sel; }
+
+    /** i 번째 침대를 고른다. 끝에서 넘기면 처음으로 돈다 */
+    private void selectIndex(int i) {
+        int n = bedCount();
+        if (n == 0) return;
+        i = ((i % n) + n) % n;
+        if (i == curIndex()) return;
+        if (i < beds.size()) { selRemote = false; sel = i; }
+        else { selRemote = true; sel = i - beds.size(); }
+        restoreTok = "";            // 사용자가 직접 골랐다 — 마지막 침대 복원은 그만
+        saveSel();
+        switched();
+    }
+
+    /** 마지막으로 본 침대를 기억한다 — 다음에 앱을 켜면 그 침대부터 */
+    private void saveSel() {
+        SharedPreferences.Editor e = prefs.edit().putString("selToken", curToken());
+        if (!selRemote) e.putInt("sel", sel);
+        e.apply();
+    }
+
+    /** ‹ › 버튼이나 카드를 쓸었을 때 — 그림이 옆으로 밀려나며 바뀐다 */
+    private void swipeTo(final int dir) {
+        if (bedCount() < 2) return;
+        if (bedView == null || heroCard == null) { selectIndex(curIndex() + dir); return; }
+        final float w = heroCard.getWidth() * 0.25f;
+        bedView.animate().translationX(-dir * w).alpha(0f).setDuration(110).withEndAction(new Runnable(){ public void run(){
+            selectIndex(curIndex() + dir);
+            if (bedView == null) return;
+            bedView.setTranslationX(dir * w);
+            bedView.animate().translationX(0).alpha(1f).setDuration(150).start();
+        }}).start();
+    }
+
+    /** 카드 위쪽 이름·주인·점 표시 */
+    private void updateHero() {
+        if (heroName == null) return;
+        int n = bedCount();
+        LanPeers.RemoteBed rb = curRemote();
+        heroName.setText(curName() + (rb != null ? " ↗" : ""));
+        heroSub.setText(rb != null
+                ? (rb.phone.isEmpty() ? "다른 폰" : rb.phone) + " 에 등록된 침대 · 그 폰을 거쳐 조작"
+                : "이 폰에 등록된 침대");
+        int vis = n >= 2 ? View.VISIBLE : View.INVISIBLE;
+        heroPrev.setVisibility(vis);
+        heroNext.setVisibility(vis);
+        if (n >= 2) {
+            StringBuilder d = new StringBuilder();
+            int cur = curIndex();
+            for (int i = 0; i < n; i++) d.append(i == cur ? '●' : '○');
+            heroDots.setText(d.toString() + "   옆으로 넘겨서 바꾸기");
+            heroDots.setVisibility(View.VISIBLE);
+        } else heroDots.setVisibility(View.GONE);
     }
 
     /** 다른 침대로 바꿨을 때 */
@@ -1467,6 +1580,13 @@ public class MainActivity extends Activity {
             g3.addView(linkRow("배터리 제한 풀기", "권장", new Runnable(){ public void run(){ askBattery(); }}));
         }
         g3.addView(u.hair());
+        final boolean stay = ServerService.stayOn(this);
+        g3.addView(linkRow("앱을 닫아도 대기", stay ? "켜짐 · 배터리 더 씀" : "꺼짐 · 닫고 5분 뒤 끔",
+                new Runnable(){ public void run(){
+                    prefs.edit().putBoolean("stayOn", !stay).apply();
+                    toast(stay ? "앱을 닫고 5분이 지나면 연결을 모두 끕니다" : "앱을 닫아도 계속 침대를 기다립니다");
+                    renderSettings(); }}));
+        g3.addView(u.hair());
         final boolean awake = ServerService.keepAwake(this);
         g3.addView(linkRow("연결 유지 강화", awake ? "켜짐 · 배터리 더 씀" : "꺼짐 · 배터리 절약",
                 new Runnable(){ public void run(){
@@ -1476,6 +1596,9 @@ public class MainActivity extends Activity {
                     renderSettings(); }}));
         setBox.addView(g3);
         setBox.addView(u.note("다른 폰이 넘기기 목록에서 이 폰을 못 찾으면, 위 주소를 직접 넣으면 됩니다."));
+        setBox.addView(u.note("앱을 닫아도 대기: 꺼 두면 앱을 닫고 5분 뒤 침대 연결과 다른 폰 연결을 모두 끄고, 앱을 켜면 다시 연결합니다 "
+                + "(침대가 다시 붙는 데 몇 초 걸립니다). 그동안에는 다른 폰도 이 폰의 침대를 조작할 수 없습니다. "
+                + "상대방 폰의 앱이 닫혀 있어도 그 침대를 쓰고 싶다면 상대방 폰에서 이걸 켜세요."));
         setBox.addView(u.note("연결 유지 강화: 평소엔 꺼 두세요. 폰 화면이 꺼진 뒤 한참 지나서 침대가 반응하지 않거나 "
                 + "'기다리는 중'으로 바뀌면 그때 켜세요. 켜면 폰이 잠들지 않아 배터리를 더 씁니다."));
 
@@ -1573,7 +1696,8 @@ public class MainActivity extends Activity {
                     post(new Runnable(){ public void run(){ applyRemotes(rb); }});
                 } finally { peerBusy.set(false); }
             }});
-            if (ticking) ui.postDelayed(this, 3000);
+            // 이웃 침대를 보고 있으면 자주(1.2초) 받아와서 리모컨처럼 바로바로 보이게, 아니면 3초
+            if (ticking) ui.postDelayed(this, curRemote() != null ? 1200 : 3000);
         } };
 
     /** 이웃 폰 침대 목록을 반영한다 — 고른 침대는 순서가 바뀌어도 그대로 유지 */
@@ -1589,6 +1713,13 @@ public class MainActivity extends Activity {
             sig.append(r.token).append('=').append(r.name).append(';');
         }
         remotes = mine;
+        // 지난번에 이웃 침대를 보다가 앱을 껐다면, 그 침대가 보이는 순간 그리로 옮긴다 (직접 고르기 전까지만)
+        boolean restored = false;
+        if (!restoreTok.isEmpty() && screen == SCR_MAIN) {
+            for (int i = 0; i < remotes.size(); i++) if (remotes.get(i).token.equals(restoreTok)) {
+                selRemote = true; sel = i; selTok = null; restoreTok = ""; restored = true;
+            }
+        }
         if (selTok != null) {
             int found = -1;
             for (int i = 0; i < remotes.size(); i++) if (remotes.get(i).token.equals(selTok)) found = i;
@@ -1605,7 +1736,8 @@ public class MainActivity extends Activity {
 
         if (screen == SCR_MAIN) {
             if (beds.isEmpty() && remotes.isEmpty()) { rebuild(); return; }   // 볼 침대가 없어졌다 → 연결하기 화면
-            if (changed) { buildTabs(); applyBedSpecific(); }
+            if (restored) { switched(); return; }
+            if (changed) { buildTabs(); applyBedSpecific(); updateHero(); }
         } else if (screen == SCR_WIZARD && wasNone && !remotes.isEmpty() && beds.isEmpty()
                 && wizBox != null && step == 0 && !wizHandover) {
             // 마법사 첫 화면에 있을 때만, 안내를 띄우기 위해 다시 그린다
@@ -1704,6 +1836,7 @@ public class MainActivity extends Activity {
         statusDot.setTextColor(on ? 0xFFFFFFFF : u.muted);
         statusDot.setBackground(u.box(on ? u.ok : u.card, on ? 0 : u.line, 20));
 
+        updateHero();
         settleTargets();
         int h = pinValue("V11", -1), l = pinValue("V13", -1), tb = pinValue("V14", -1);
         Tgt ht = targets.get("11"), lt = targets.get("13"), tt = targets.get("14");

@@ -89,6 +89,13 @@ public class App {
         lan().start(app, phoneName(app), phoneId(app));
     }
 
+    /** 앱을 닫고 한참 지나면 다른 폰 창구와 이웃 찾기를 끈다 (배터리) */
+    public static synchronized void stopNet() {
+        if (API != null) API.stop();
+        if (LAN != null) LAN.stop();
+        addLog("대기", "앱을 닫은 지 오래돼 연결을 모두 껐습니다");
+    }
+
     public static synchronized LanPeers lan() {
         if (LAN == null) LAN = new LanPeers();
         return LAN;

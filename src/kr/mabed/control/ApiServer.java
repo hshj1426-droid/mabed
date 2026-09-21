@@ -24,31 +24,43 @@ public class ApiServer {
 
     public ApiServer(Host h) { this.host = h; }
 
-    public void start() {
+    public synchronized void start() {
         if (running) return;
         running = true;
         new Thread(new Runnable() { public void run() { loop(); } }).start();
     }
 
-    public void stop() {
+    public synchronized void stop() {
         running = false;
         try { if (server != null) server.close(); } catch (Exception ignored) {}
+        server = null;
     }
 
     private void loop() {
+        ServerSocket ss = null;
         try {
-            server = new ServerSocket();
-            server.setReuseAddress(true);
-            server.bind(new InetSocketAddress(PORT));
+            ss = new ServerSocket();
+            ss.setReuseAddress(true);
+            ss.bind(new InetSocketAddress(PORT));
+            synchronized (this) {
+                if (!running) { ss.close(); return; }   // 여는 사이 꺼졌다
+                server = ss;
+            }
             App.addLog("이웃", "다른 폰 창구 열림 · 포트 " + PORT);
             while (running) {
-                final Socket s = server.accept();
+                final Socket s = ss.accept();
                 new Thread(new Runnable() { public void run() { handle(s); } }).start();
             }
         } catch (Exception e) {
-            if (running) App.addLog("오류", "이웃 창구 실패 · " + e.getMessage());
-            running = false;   // 다음 startNet 때 다시 열 수 있게
-            try { if (server != null) server.close(); } catch (Exception ignored) {}
+            synchronized (this) {
+                // 끈 뒤 곧바로 다시 켰을 수 있다 — 지금 창구가 이 스레드의 것일 때만 '꺼짐'으로 돌린다
+                if (running && (server == ss || server == null)) {
+                    App.addLog("오류", "이웃 창구 실패 · " + e.getMessage());
+                    running = false;   // 다음 startNet 때 다시 열 수 있게
+                    server = null;
+                }
+            }
+            try { if (ss != null) ss.close(); } catch (Exception ignored) {}
         }
     }
 

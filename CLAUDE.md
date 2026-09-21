@@ -36,8 +36,8 @@ src/kr/mabed/control/
   MainActivity.java  화면 전체 — 메인 / 설정 화면 / 설정 마법사 / 넘겨주기 · 뒤로가기(onBackPressed)
   BedServer.java     Blynk Legacy TCP 서버 (포트 8080) — 손대지 말 것
   App.java           서버·이웃 창구(ApiServer)·이웃 찾기(LanPeers)를 앱 전체에 하나씩. 화면이 새로 떠도 새로 만들지 않는다 (startNet)
-  ServerService.java 포그라운드 서비스. WakeLock·WifiLock 은 설정의 "연결 유지 강화"를 켰을 때만 (5.7.0, 배터리)
-  BootReceiver.java  재부팅 후 서버 되살리기 (serverOn 이고 침대가 있을 때만)
+  ServerService.java 포그라운드 서비스. 앱을 닫고 5분 뒤 모두 끔("앱을 닫아도 대기" stayOn 이면 계속). WakeLock·WifiLock 은 "연결 유지 강화"일 때만
+  BootReceiver.java  재부팅 후 서버 되살리기 (stayOn·serverOn 이고 침대가 있을 때만)
   LanPeers.java      같은 와이파이의 다른 폰 찾기 (UDP 9098). MulticastLock 은 화면이 보일 때만, 한 번 찾은 폰은 /state 로 직접 확인
   ApiServer.java     다른 폰이 보내는 명령 받기 (HTTP 9099: /state, /cmd, /rename) — 암호 없음
   Beds.java          등록 침대 목록 (prefs "beds" JSON)

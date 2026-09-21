@@ -35,14 +35,19 @@ public class LanPeers {
     /** 화면을 보고 있는가 — 그때만 이웃 신호를 받고, 알림 신호도 자주 보낸다 */
     private volatile boolean listening = false;
 
-    public void start(Context ctx, String name, String id) {
+    public synchronized void start(Context ctx, String name, String id) {
         myName = name; myId = id;
         if (ctx != null) app = ctx.getApplicationContext();
         if (running) return;
         running = true;
-        new Thread(new Runnable(){ public void run(){ listen(); }}).start();
-        new Thread(new Runnable(){ public void run(){ beacon(); }}).start();
+        final int g = ++gen;
+        new Thread(new Runnable(){ public void run(){ listen(g); }}).start();
+        new Thread(new Runnable(){ public void run(){ beacon(g); }}).start();
     }
+
+    /** 끄고 다시 켤 때 예전 스레드가 같이 도는 일이 없게 — 켤 때마다 번호가 바뀌고, 옛 번호 스레드는 멈춘다 */
+    private volatile int gen = 0;
+    private DatagramSocket listenSock;
 
     /** 화면이 보일 때 true, 안 보일 때 false.
      *  MulticastLock 이 없으면 기종에 따라 브로드캐스트가 안 들어온다. 하지만 이걸 늘 잡고 있으면
@@ -69,8 +74,11 @@ public class LanPeers {
     /** 이웃에게 알릴 이 폰 이름을 바꾼다 */
     public void setName(String name) { if (name != null && !name.isEmpty()) myName = name; }
 
-    public void stop() {
+    public synchronized void stop() {
         running = false;
+        gen++;
+        try { if (listenSock != null) listenSock.close(); } catch (Throwable ignored) {}   // 받기 대기를 깨운다
+        listenSock = null;
         try { if (mcast != null && mcast.isHeld()) mcast.release(); } catch (Throwable ignored) {}
         mcast = null;
     }
@@ -90,8 +98,8 @@ public class LanPeers {
         return out;
     }
 
-    private void beacon() {
-        while (running) {
+    private void beacon(int g) {
+        while (running && g == gen) {
             try {
                 DatagramSocket s = new DatagramSocket();
                 s.setBroadcast(true);
@@ -105,15 +113,19 @@ public class LanPeers {
         }
     }
 
-    private void listen() {
+    private void listen(int g) {
         DatagramSocket s = null;
         try {
             s = new DatagramSocket(null);
             s.setReuseAddress(true);
             s.bind(new InetSocketAddress(UDP_PORT));
             s.setBroadcast(true);
+            synchronized (this) {
+                if (g != gen) { s.close(); return; }
+                listenSock = s;
+            }
             byte[] buf = new byte[512];
-            while (running) {
+            while (running && g == gen) {
                 DatagramPacket p = new DatagramPacket(buf, buf.length);
                 s.receive(p);
                 String msg = new String(p.getData(), 0, p.getLength(), "UTF-8");
