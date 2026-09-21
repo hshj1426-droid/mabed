@@ -27,6 +27,18 @@ public class App {
     static synchronized android.content.Intent takeConfirm() {
         android.content.Intent i = pendingConfirm; pendingConfirm = null; return i;
     }
+
+    /** 설치 결과를 화면에 알린다 (null = 성공 또는 알릴 것 없음) */
+    private static String installMsg;
+    private static boolean installDone;
+    static synchronized void installResult(String msg) { installMsg = msg; installDone = true; ping(); }
+    /** 결과가 왔으면 {메시지} 를, 아직이면 null 을 돌려준다 */
+    static synchronized String[] takeInstallResult() {
+        if (!installDone) return null;
+        installDone = false;
+        String m = installMsg; installMsg = null;
+        return new String[]{ m };
+    }
     public static synchronized BedServer server() {
         if (SERVER == null) {
             SERVER = new BedServer(new BedServer.Listener() {

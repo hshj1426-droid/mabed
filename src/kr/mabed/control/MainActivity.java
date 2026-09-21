@@ -51,6 +51,7 @@ public class MainActivity extends Activity {
     private Updates.Info pending;
     private boolean installAfterPerm = false;   // 설치 허용 화면에 다녀오는 중
     private String askedVer = "";               // 이번에 이미 물어본 새 버전
+    private boolean updWaiting = false;         // 설치를 넘기고 안드로이드의 답을 기다리는 중
     private LinearLayout tabRow;
     private final Map<String, Slider> bars = new LinkedHashMap<>();
     private final List<Object[]> poses = new ArrayList<>();   // {BedView 아이콘, 숫자 글자, 상체값, 다리값}
@@ -141,8 +142,7 @@ public class MainActivity extends Activity {
         App.uiVisible = true;
         startTicking();
         // 뒤에 있는 동안 설치 확인이 필요해졌다 (알림이 막혀 있어도 앱을 열면 이어서)
-        Intent confirm = App.takeConfirm();
-        if (confirm != null) try { startActivity(confirm); } catch (Throwable ignored) {}
+        handleInstall();
         // '이 출처 허용'을 켜고 돌아왔으면 하던 설치를 이어서 한다
         if (installAfterPerm && pending != null && Updater.canInstall(this)) {
             installAfterPerm = false;
@@ -1609,7 +1609,27 @@ public class MainActivity extends Activity {
     }
 
     // ── 새로고침 ───────────────────────────────────────
+    /** 설치 리시버가 넘겨준 '설치' 확인 창과 결과를 화면에서 처리한다.
+     *  확인 창은 반드시 화면(Activity)이 띄운다 — 리시버가 띄우면 안드로이드 14+ 가 막는다 */
+    private void handleInstall() {
+        if (!App.uiVisible) return;
+        Intent confirm = App.takeConfirm();
+        if (confirm != null) {
+            updWaiting = false;
+            try { startActivity(confirm); }
+            catch (Throwable t) { toast("설치 창을 열지 못했습니다 · " + t.getClass().getSimpleName()); }
+            if (pending != null) showUpdate(pending);
+        }
+        String[] r = App.takeInstallResult();
+        if (r != null) {
+            updWaiting = false;
+            if (pending != null) showUpdate(pending);
+            if (r[0] != null) toast(r[0]);
+        }
+    }
+
     private void refresh() {
+        handleInstall();
         // 다른 폰이 이 폰 침대의 이름을 바꾼 경우 등 — 저장된 목록을 다시 읽는다
         if (App.bedsRev != seenRev) {
             seenRev = App.bedsRev;
@@ -1898,12 +1918,36 @@ public class MainActivity extends Activity {
         }
         if (updView != null) updView.setText("새 버전 " + n.version + " 내려받는 중…");
         toast("내려받는 중…");
+        App.takeInstallResult();   // 지난번 결과가 남아 있으면 버린다
+        updWaiting = true;
         bg(new Runnable(){ public void run(){
             try {
                 Updater.downloadAndInstall(MainActivity.this, n);
                 // 이후는 안드로이드 설치 창(처음 한 번) 또는 조용히 설치 → 앱이 새로 시작된다
+                post(new Runnable(){ public void run(){
+                    if (!updWaiting) return;       // 그 사이 이미 답이 왔다
+                    if (updView != null) updView.setText("새 버전 " + n.version + " 설치 창을 여는 중…");
+                    // 30초 안에 아무 답이 없으면 멈춰 있지 말고 알려준다 (5.5.0 에서는 '내려받는 중'에 멈춰 있었다)
+                    ui.postDelayed(new Runnable(){ public void run(){
+                        if (!updWaiting) return;
+                        updWaiting = false;
+                        showUpdate(n);
+                        new android.app.AlertDialog.Builder(MainActivity.this)
+                            .setTitle("설치 창이 뜨지 않았습니다")
+                            .setMessage("'지금 설치'를 한 번 더 눌러보세요.\n그래도 안 되면 설정 → 연결 기록 보기 화면을 캡처해서 보내주세요.\n\n"
+                                    + "급하면 깃허브 릴리스 페이지에서 직접 받아 설치해도 됩니다.")
+                            .setPositiveButton("알겠습니다", null)
+                            .setNeutralButton("릴리스 페이지", new android.content.DialogInterface.OnClickListener() {
+                                public void onClick(android.content.DialogInterface d, int w) {
+                                    try { startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(
+                                            "https://github.com/" + Updates.REPO + "/releases/latest"))); }
+                                    catch (Throwable ignored) {} } })
+                            .show();
+                    }}, 30000);
+                }});
             } catch (final Exception e) {
                 post(new Runnable(){ public void run(){
+                    updWaiting = false;
                     if (updView != null) showUpdate(n);
                     toast("설치하지 못했습니다 · " + e.getMessage());
                 }});
